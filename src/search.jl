@@ -87,13 +87,27 @@ The optimizer uses a larger table (1<<18) for better hit rates at depth 5+.
 """
 new_tt(size::Int = TT_SIZE) = fill(TT_EMPTY, size)
 
+const MATE_THRESHOLD = CHECKMATE_SCORE - MAX_PLY
+
+"""Normalize mate score for TT storage: add ply so score is ply-independent."""
+@inline function normalize_score(score::Float64, ply::Int)::Float64
+    abs(score) > MATE_THRESHOLD || return score
+    return score > 0 ? score + ply : score - ply
+end
+
+"""Denormalize mate score from TT: subtract ply to restore current perspective."""
+@inline function denormalize_score(score::Float64, ply::Int)::Float64
+    abs(score) > MATE_THRESHOLD || return score
+    return score > 0 ? score - ply : score + ply
+end
+
 @inline function tt_probe(tt::Vector{TTEntry}, hash::UInt64,
-                           depth::Int, α::Float64, β::Float64)
+                           depth::Int, ply::Int, α::Float64, β::Float64)
     mask = UInt64(length(tt) - 1)
     e = @inbounds tt[(hash & mask) + 1]
     e.hash != hash     && return nothing
     Int(e.depth) < depth && return nothing
-    s = Float64(e.score)
+    s = denormalize_score(Float64(e.score), ply)
     e.flag == TT_EXACT && return s
     e.flag == TT_LOWER && s >= β && return s
     e.flag == TT_UPPER && s <= α && return s
@@ -101,10 +115,11 @@ new_tt(size::Int = TT_SIZE) = fill(TT_EMPTY, size)
 end
 
 @inline function tt_store!(tt::Vector{TTEntry}, hash::UInt64,
-                            depth::Int, score::Float64, flag::UInt8)
+                            depth::Int, ply::Int, score::Float64, flag::UInt8)
     mask = UInt64(length(tt) - 1)
     idx = (hash & mask) + 1
-    @inbounds tt[idx] = TTEntry(hash, Float32(score), Int8(depth), flag)
+    ns = normalize_score(score, ply)
+    @inbounds tt[idx] = TTEntry(hash, Float32(ns), Int8(depth), flag)
 end
 
 # ── Per-thread pre-allocated buffers ─────────────────────────
@@ -318,7 +333,7 @@ function qsearch(b::Board, w::Vector{Float64},
 
     b.halfmove >= 100 && return 0.0
 
-    hit = tt_probe(tt, b.hash, 0, α, β)
+    hit = tt_probe(tt, b.hash, 0, ply, α, β)
     hit !== nothing && return hit
 
     ensure_ply_buffers!(tid, ply)
@@ -366,7 +381,7 @@ function qsearch(b::Board, w::Vector{Float64},
     end
 
     flag = α <= orig_α ? TT_UPPER : (α >= β ? TT_LOWER : TT_EXACT)
-    tt_store!(tt, b.hash, 0, α, flag)
+    tt_store!(tt, b.hash, 0, ply, α, flag)
     return α
 end
 
@@ -397,7 +412,7 @@ function negamax(b::Board, w::Vector{Float64},
 
     # ── Transposition table probe ────────────────────────────────
     orig_α = α
-    hit = tt_probe(tt, b.hash, depth, α, β)
+    hit = tt_probe(tt, b.hash, depth, ply, α, β)
     hit !== nothing && return hit
 
     # ── Terminal: enter quiescence ───────────────────────────────
@@ -498,7 +513,7 @@ function negamax(b::Board, w::Vector{Float64},
 
         best_score = max(best_score, score)
         if score >= β
-            tt_store!(tt, b.hash, depth, β, TT_LOWER)
+            tt_store!(tt, b.hash, depth, ply, β, TT_LOWER)
             return β
         end
         α = max(α, score)
@@ -506,7 +521,7 @@ function negamax(b::Board, w::Vector{Float64},
 
     flag = best_score <= orig_α ? TT_UPPER :
            best_score >= β      ? TT_LOWER : TT_EXACT
-    tt_store!(tt, b.hash, depth, best_score, flag)
+    tt_store!(tt, b.hash, depth, ply, best_score, flag)
     return best_score
 end
 
