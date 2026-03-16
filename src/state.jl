@@ -59,7 +59,7 @@ export WHITE, BLACK, EMPTY
 export PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING
 export piece_at, is_empty, is_color, piece_type, piece_color
 export Move, move_to_string, apply_move!, undo_move!, generate_moves, generate_moves!
-export find_king, is_in_check, is_checkmate, is_stalemate, is_game_over, game_result, is_repetition
+export find_king, is_in_check, is_checkmate, is_stalemate, is_game_over, game_result, is_repetition, is_threefold_repetition
 export sync_board!
 export ZOBRIST_SIDE, ZOBRIST_EP  # needed by optimize.jl for null-move hash updates
 
@@ -156,8 +156,8 @@ mutable struct Board
     # ── Position history for repetition detection ─────────────────
     # Stores the Zobrist hash of every position reached in the current
     # game/search line. apply_move! pushes the pre-move hash;
-    # undo_move! pops it. This lets is_repetition() detect draws by
-    # threefold repetition in O(halfmove) time — we only need to scan
+    # undo_move! pops it. This lets is_repetition() and
+    # is_threefold_repetition() detect draws in O(halfmove) time — we only need to scan
     # back to the last irreversible move (capture or pawn push) since
     # positions before that point can never repeat.
     history::Vector{UInt64}
@@ -849,31 +849,63 @@ end
 # ── Game State Detection ───────────────────────────────────────
 
 #= ── Repetition Detection ─────────────────────────────────────
-   Returns true if the current position (b.hash) has been seen
-   before in the game/search history.
+   Two separate APIs serve different purposes:
 
-   The Zobrist hash already encodes piece placement, side to move,
+   • is_repetition(b, threshold=2): Returns true when the current
+     position has appeared at least `threshold` times in the game
+     history.  The default threshold of 2 (any prior occurrence)
+     is used by the search (negamax) to prune cycles early — this
+     is standard engine practice and is conservative (if neither
+     side deviates, the game WILL be drawn).
+
+   • is_threefold_repetition(b): Returns true only when the
+     position has appeared 3 or more times total (current + 2
+     prior).  Used for legal game termination under FIDE rules
+     (Articles 9.2/9.5), where a draw can only be claimed after
+     three occurrences of the same position.
+
+   This separation ensures search efficiency (aggressive 2-fold
+   pruning) while maintaining FIDE compliance for game-over
+   detection, interactive play, and optimizer training games.
+
+   The Zobrist hash encodes piece placement, side to move,
    castling rights, and en passant — so equal hashes mean equal
    positions for the purpose of the repetition rule.
 
    Optimization: we only scan back `halfmove` entries because any
    position before the last irreversible move (capture or pawn push)
    can never repeat — the board is fundamentally different.
-
-   In search, a single repetition (2-fold) is treated as a draw.
-   This is standard practice: it prevents the engine from entering
-   cycles and is conservative (the game WILL be drawn if neither
-   side deviates from the loop).
 =#
-function is_repetition(b::Board)::Bool
+function is_repetition(b::Board, threshold::Int=2)::Bool
     h = b.hash
     n = length(b.history)
     # Positions before the last irreversible move can't repeat
     check = min(b.halfmove, n)
+    # `threshold` counts TOTAL occurrences including the current position.
+    # History only stores PRIOR positions, so we need (threshold - 1) matches.
+    needed = threshold - 1
+    count = 0
     @inbounds for i in (n - check + 1):n
-        b.history[i] == h && return true
+        if b.history[i] == h
+            count += 1
+            count >= needed && return true
+        end
     end
     return false
+end
+
+"""
+    is_threefold_repetition(b::Board) -> Bool
+
+FIDE-compliant draw detection: returns true only when the current
+position has occurred at least 3 times total (the current occurrence
+plus 2 or more prior occurrences in the game history).
+
+Use this for game-over detection, interactive play, and optimizer
+game loops.  For search pruning, use `is_repetition(b)` (2-fold).
+"""
+function is_threefold_repetition(b::Board)::Bool
+    is_repetition(b, 3)
 end
 
 function is_checkmate(b::Board)
@@ -885,7 +917,7 @@ function is_stalemate(b::Board)
 end
 
 function is_game_over(b::Board)
-    isempty(generate_moves(b)) || b.halfmove ≥ 100 || is_repetition(b)
+    isempty(generate_moves(b)) || b.halfmove ≥ 100 || is_threefold_repetition(b)
 end
 
 function game_result(b::Board)

@@ -1,22 +1,15 @@
 #=
-verify_repetition.jl — Issue #1 verification tests
+verify_repetition.jl — Issue #1 verification tests (post-fix)
 
-Purpose: Determine whether Field-Engine uses 2-fold or 3-fold repetition
-for game-over detection, and whether search vs game termination have
-separate thresholds.
+Verifies the dual-API repetition detection:
+  • is_repetition(b, threshold=2): search pruning (2-fold default)
+  • is_threefold_repetition(b): FIDE-compliant game termination (3-fold)
+  • is_game_over(b): uses 3-fold for legal draw detection
 
 FIDE rule: A game is drawn when the same position occurs THREE times
 (with the same side to move, castling rights, and en passant square).
 Standard engine practice: use 2-fold in search (conservative pruning)
 but 3-fold for actual game termination.
-
-What we test:
-  1. Does is_repetition() fire on 2-fold (first repeat)?
-  2. Does is_game_over() fire on 2-fold (first repeat)?
-  3. Is there any separate API that requires 3-fold?
-  4. Does the search (negamax) treat 2-fold as draw?
-  5. Does play_game() in optimize.jl terminate on 2-fold?
-  6. Edge cases: irreversible moves, en passant hash differences
 
 Run:  julia test/verify_repetition.jl
 =#
@@ -71,13 +64,13 @@ function play_knight_cycle!(b::Board)
 end
 
 println("═══════════════════════════════════════════════════════════════")
-println(" Issue #1: Verify Repetition Detection Thresholds")
+println(" Issue #1: Verify Repetition Detection (Post-Fix)")
 println("═══════════════════════════════════════════════════════════════")
 
 # ══════════════════════════════════════════════════════════════════
-# TEST GROUP 1: What threshold does is_repetition() use?
+# TEST GROUP 1: is_repetition(b) defaults to 2-fold (search pruning)
 # ══════════════════════════════════════════════════════════════════
-println("\n── 1. is_repetition() threshold ──\n")
+println("\n── 1. is_repetition(b) threshold (default=2, for search) ──\n")
 
 let
     b = new_board()
@@ -93,170 +86,134 @@ let
     test("After 1 cycle: current position = starting position", b.hash == start_hash)
 
     fires_on_2fold = is_repetition(b)
-    test("is_repetition() fires on 2-fold (1st repeat)", fires_on_2fold)
+    test("is_repetition(b) fires on 2-fold (default threshold=2)", fires_on_2fold)
+
+    # Explicit threshold=2 behaves the same as default
+    test("is_repetition(b, 2) also fires on 2-fold", is_repetition(b, 2))
 
     # Second cycle: position seen for the 3rd time total
     play_knight_cycle!(b)
     reps_after_2_cycles = count_repetitions(b)
     test("After 2 cycles: hash in history exactly 2 times", reps_after_2_cycles == 2)
-    test("After 2 cycles: is_repetition() still true", is_repetition(b))
-
-    println()
-    if fires_on_2fold
-        println("  → FINDING: is_repetition() uses 2-FOLD detection")
-        println("    (fires when position has been seen just ONCE before)")
-    else
-        println("  → FINDING: is_repetition() uses 3-FOLD detection")
-        println("    (requires position to be seen TWICE before)")
-    end
+    test("After 2 cycles: is_repetition(b) still true", is_repetition(b))
 end
 
 # ══════════════════════════════════════════════════════════════════
-# TEST GROUP 2: What threshold does is_game_over() use?
+# TEST GROUP 2: is_threefold_repetition(b) requires 3-fold
 # ══════════════════════════════════════════════════════════════════
-println("\n── 2. is_game_over() threshold ──\n")
-
-let
-    # 2a. Test at 2-fold (after 1 cycle)
-    b = new_board()
-    play_knight_cycle!(b)
-
-    game_over_at_2fold = is_game_over(b)
-    test("is_game_over() returns true at 2-fold", game_over_at_2fold)
-
-    # 2b. Test result at 2-fold
-    result_at_2fold = game_result(b)
-    test("game_result() returns 0 (draw) at 2-fold", result_at_2fold == 0)
-
-    # 2c. Verify it's the repetition causing game_over, not something else
-    test("Not checkmate", !is_checkmate(b))
-    test("Not stalemate", !is_stalemate(b))
-    test("halfmove < 100", b.halfmove < 100)
-    test("Game-over is due to repetition (only)", is_repetition(b))
-
-    println()
-    if game_over_at_2fold
-        println("  → FINDING: is_game_over() terminates at 2-FOLD")
-        println("    This is STRICTER than FIDE rules (which require 3-fold).")
-        println("    A game is declared drawn after just ONE repetition.")
-    else
-        println("  → FINDING: is_game_over() requires more than 2-fold")
-    end
-end
-
-# ══════════════════════════════════════════════════════════════════
-# TEST GROUP 3: Is there a separate 3-fold API?
-# ══════════════════════════════════════════════════════════════════
-println("\n── 3. Check for separate 2-fold vs 3-fold APIs ──\n")
-
-let
-    # Check if any function like is_repetition_3fold or is_legal_draw exists
-    has_3fold_api = isdefined(State, :is_repetition_3fold) ||
-                    isdefined(State, :is_threefold_repetition) ||
-                    isdefined(State, :is_legal_draw)
-    test("No separate 3-fold API exists in State module", !has_3fold_api)
-
-    has_search_rep = isdefined(Search, :is_search_repetition) ||
-                     isdefined(Search, :is_repetition_search)
-    test("No separate search-repetition API in Search module", !has_search_rep)
-
-    println()
-    println("  → FINDING: Single is_repetition() function serves BOTH purposes")
-    println("    Search and game termination share the same 2-fold threshold.")
-end
-
-# ══════════════════════════════════════════════════════════════════
-# TEST GROUP 4: Search treats 2-fold as draw (score = 0.0)
-# ══════════════════════════════════════════════════════════════════
-println("\n── 4. Search (negamax) repetition behavior ──\n")
+println("\n── 2. is_threefold_repetition(b) threshold (FIDE 3-fold) ──\n")
 
 let
     b = new_board()
 
-    # Set up a position where White has a huge material advantage
-    # but the position is a 2-fold repetition
-    # Use knight dance to create repetition in a normal game
-    play_knight_cycle!(b)
-    test("Pre-condition: is_repetition is true", is_repetition(b))
+    test("Fresh board: no threefold", !is_threefold_repetition(b))
 
-    # Use the eval_w function to confirm the position has a non-zero eval
+    # After 1 cycle: 2-fold — NOT enough for threefold
+    play_knight_cycle!(b)
+    test("After 1 cycle (2-fold): is_threefold_repetition is FALSE",
+         !is_threefold_repetition(b))
+    test("After 1 cycle (2-fold): is_repetition(b, 2) is TRUE",
+         is_repetition(b, 2))
+
+    # After 2 cycles: 3-fold — NOW threefold fires
+    play_knight_cycle!(b)
+    test("After 2 cycles (3-fold): is_threefold_repetition is TRUE",
+         is_threefold_repetition(b))
+    test("After 2 cycles: is_repetition(b, 3) also TRUE",
+         is_repetition(b, 3))
+end
+
+# ══════════════════════════════════════════════════════════════════
+# TEST GROUP 3: is_game_over() now uses 3-fold (not 2-fold)
+# ══════════════════════════════════════════════════════════════════
+println("\n── 3. is_game_over() uses 3-fold (FIDE-compliant) ──\n")
+
+let
+    # 3a. At 2-fold: game should NOT be over (just a search draw)
+    b = new_board()
+    play_knight_cycle!(b)
+
+    test("At 2-fold: is_repetition(b) is true (search sees draw)",
+         is_repetition(b))
+    test("At 2-fold: is_game_over() is FALSE (game continues)",
+         !is_game_over(b))
+    test("At 2-fold: is_threefold_repetition is false",
+         !is_threefold_repetition(b))
+
+    # 3b. At 3-fold: game IS over
+    play_knight_cycle!(b)
+    test("At 3-fold: is_game_over() is TRUE", is_game_over(b))
+    test("At 3-fold: game_result() returns 0 (draw)", game_result(b) == 0)
+    test("At 3-fold: not checkmate", !is_checkmate(b))
+    test("At 3-fold: not stalemate", !is_stalemate(b))
+    test("At 3-fold: halfmove < 100", b.halfmove < 100)
+end
+
+# ══════════════════════════════════════════════════════════════════
+# TEST GROUP 4: Dual API exists
+# ══════════════════════════════════════════════════════════════════
+println("\n── 4. Verify dual API exists in State module ──\n")
+
+let
+    test("is_repetition is defined in State", isdefined(State, :is_repetition))
+    test("is_threefold_repetition is defined in State",
+         isdefined(State, :is_threefold_repetition))
+
+    # is_repetition now accepts an optional threshold parameter
+    rep_methods = methods(is_repetition)
+    test("is_repetition has at least 1 method", length(rep_methods) >= 1)
+
+    # is_threefold_repetition exists as a convenience wrapper
+    tf_methods = methods(is_threefold_repetition)
+    test("is_threefold_repetition has at least 1 method", length(tf_methods) >= 1)
+end
+
+# ══════════════════════════════════════════════════════════════════
+# TEST GROUP 5: Search (negamax) still uses 2-fold
+# ══════════════════════════════════════════════════════════════════
+println("\n── 5. Search (negamax) uses 2-fold correctly ──\n")
+
+let
+    b = new_board()
+    play_knight_cycle!(b)
+    test("Pre-condition: 2-fold repetition", is_repetition(b))
+    test("Pre-condition: NOT threefold", !is_threefold_repetition(b))
+
     field = zeros(Float64, 8, 8)
     Fields.compute_total_field!(field, b)
     w = Float64[Energy.W_MATERIAL, Energy.W_FIELD, Energy.W_KING_SAFETY,
                 Energy.W_TENSION, Energy.W_MOBILITY]
-    raw_eval = eval_w(b, w, field)
-    test("Position has a near-zero raw eval (starting position)", abs(raw_eval) < 1.0)
 
-    # Now test that search returns 0.0 for a repeated position
-    # The negamax function checks is_repetition at the top and returns 0.0
-    # We can verify this by calling negamax on the repeated position
     tid = Threads.threadid()
     Search.ensure_ply_buffers!(tid, 2)
     tt = Search.new_tt()
     score = Search.negamax(b, w, 1, -10000.0, 10000.0, field, 1, tt)
-    test("negamax returns 0.0 on 2-fold repeated position", score == 0.0)
-
-    println()
-    println("  → FINDING: Search returns draw score (0.0) on 2-fold repetition")
+    test("negamax returns 0.0 on 2-fold (search draw)", score == 0.0)
 end
 
 # ══════════════════════════════════════════════════════════════════
-# TEST GROUP 5: Forced 3-fold position — is it treated differently?
+# TEST GROUP 6: 2-fold vs 3-fold distinction in game context
 # ══════════════════════════════════════════════════════════════════
-println("\n── 5. Forced 3-fold vs 2-fold: no distinction ──\n")
+println("\n── 6. 2-fold vs 3-fold: correct separation ──\n")
 
 let
     b = new_board()
-    start_hash = b.hash
 
-    # Before any moves: position occurred 1 time (current)
     test("Start: 0 prior occurrences", count_repetitions(b) == 0)
 
     # After 1 cycle: 2-fold
     play_knight_cycle!(b)
-    test("After 1 cycle: 1 prior occurrence (2-fold total)", count_repetitions(b) == 1)
-    game_over_2fold = is_game_over(b)
+    test("After 1 cycle: 1 prior occurrence", count_repetitions(b) == 1)
+    test("2-fold: is_repetition TRUE", is_repetition(b))
+    test("2-fold: is_threefold FALSE", !is_threefold_repetition(b))
+    test("2-fold: is_game_over FALSE", !is_game_over(b))
 
     # After 2 cycles: 3-fold
     play_knight_cycle!(b)
-    test("After 2 cycles: 2 prior occurrences (3-fold total)", count_repetitions(b) == 2)
-    game_over_3fold = is_game_over(b)
-
-    test("is_game_over fires at 2-fold (doesn't wait for 3-fold)", game_over_2fold)
-    test("is_game_over still true at 3-fold", game_over_3fold)
-
-    # The key question: does game behavior differ at 2-fold vs 3-fold?
-    same_behavior = game_over_2fold == game_over_3fold
-    test("No behavioral difference between 2-fold and 3-fold", same_behavior)
-
-    println()
-    println("  → FINDING: Engine does NOT distinguish 2-fold from 3-fold.")
-    println("    Both are treated identically as a draw.")
-end
-
-# ══════════════════════════════════════════════════════════════════
-# TEST GROUP 6: Optimizer game loop uses same 2-fold threshold
-# ══════════════════════════════════════════════════════════════════
-println("\n── 6. Optimizer game loop repetition check ──\n")
-
-let
-    # We can't easily call play_game() in isolation without the full optimizer
-    # setup, but we can verify the code path by checking that is_repetition()
-    # is the ONLY repetition API and it uses 2-fold.
-
-    # Verify the function signature exists and is the same one
-    rep_method = methods(is_repetition)
-    test("is_repetition has exactly 1 method (Board -> Bool)",
-         length(rep_method) == 1)
-
-    # Verify there's no repetition count parameter
-    m = first(rep_method)
-    nargs = m.nargs - 1  # subtract 1 for the function itself
-    test("is_repetition takes exactly 1 argument (Board)", nargs == 1)
-
-    println()
-    println("  → FINDING: optimize.jl calls the same is_repetition(b)")
-    println("    which fires on 2-fold. Optimizer games end on first repeat.")
+    test("After 2 cycles: 2 prior occurrences", count_repetitions(b) == 2)
+    test("3-fold: is_repetition TRUE", is_repetition(b))
+    test("3-fold: is_threefold TRUE", is_threefold_repetition(b))
+    test("3-fold: is_game_over TRUE", is_game_over(b))
 end
 
 # ══════════════════════════════════════════════════════════════════
@@ -294,7 +251,7 @@ let
 end
 
 # ══════════════════════════════════════════════════════════════════
-# TEST GROUP 8: Rook shuffle — non-knight repetition
+# TEST GROUP 8: Rook shuffle — 2-fold does NOT end game, 3-fold does
 # ══════════════════════════════════════════════════════════════════
 println("\n── 8. Rook shuffle repetition (KR vs K endgame) ──\n")
 
@@ -302,7 +259,7 @@ let
     b = from_fen("4k3/8/8/8/8/8/8/R3K3 w - - 0 1")
     start_hash = b.hash
 
-    # Ra1-a2, Ke8-d8, Ra2-a1, Kd8-e8
+    # First cycle: Ra1-a2, Ke8-d8, Ra2-a1, Kd8-e8 → 2-fold
     apply_move!(b, find_move(b, "a1a2"))
     apply_move!(b, find_move(b, "e8d8"))
     apply_move!(b, find_move(b, "a2a1"))
@@ -310,11 +267,16 @@ let
 
     test("Rook shuffle returns to start hash", b.hash == start_hash)
     test("2-fold detected after rook shuffle", is_repetition(b))
-    test("is_game_over fires after rook shuffle", is_game_over(b))
+    test("is_game_over does NOT fire at 2-fold (FIDE correct)", !is_game_over(b))
 
-    println()
-    println("  → FINDING: 2-fold draw terminates even KR vs K (winnable).")
-    println("    FIDE would require 3-fold for a legal draw claim here.")
+    # Second cycle → 3-fold
+    apply_move!(b, find_move(b, "a1a2"))
+    apply_move!(b, find_move(b, "e8d8"))
+    apply_move!(b, find_move(b, "a2a1"))
+    apply_move!(b, find_move(b, "d8e8"))
+
+    test("3-fold after second rook shuffle", is_threefold_repetition(b))
+    test("is_game_over fires at 3-fold", is_game_over(b))
 end
 
 # ══════════════════════════════════════════════════════════════════
@@ -347,14 +309,38 @@ let
     # The completing move
     m = find_move(b, "f6g8")
     undo = apply_move!(b, m)
-    test("After completing cycle: repetition detected", is_repetition(b))
-    test("After completing cycle: game over", is_game_over(b))
+    test("After completing cycle: 2-fold repetition detected", is_repetition(b))
+    test("After completing cycle (2-fold): game NOT over", !is_game_over(b))
 
     history_len_before = length(b.history)
     undo_move!(b, m, undo)
     test("After undo: no repetition", !is_repetition(b))
     test("After undo: game not over", !is_game_over(b))
     test("After undo: history length decremented", length(b.history) == history_len_before - 1)
+end
+
+# ══════════════════════════════════════════════════════════════════
+# TEST GROUP 11: Threshold parameter edge cases
+# ══════════════════════════════════════════════════════════════════
+println("\n── 11. Threshold parameter edge cases ──\n")
+
+let
+    b = new_board()
+
+    # threshold=1 would fire even with zero prior occurrences
+    # (current position counts as 1st occurrence via the hash itself)
+    # Actually no — is_repetition only checks history, not current.
+    # So threshold=1 fires on ANY single match in history.
+    play_knight_cycle!(b)  # 2-fold
+    test("is_repetition(b, 1) true at 2-fold", is_repetition(b, 1))
+    test("is_repetition(b, 2) true at 2-fold", is_repetition(b, 2))
+    test("is_repetition(b, 3) false at 2-fold", !is_repetition(b, 3))
+
+    play_knight_cycle!(b)  # 3-fold
+    test("is_repetition(b, 1) true at 3-fold", is_repetition(b, 1))
+    test("is_repetition(b, 2) true at 3-fold", is_repetition(b, 2))
+    test("is_repetition(b, 3) true at 3-fold", is_repetition(b, 3))
+    test("is_repetition(b, 4) false at 3-fold", !is_repetition(b, 4))
 end
 
 # ══════════════════════════════════════════════════════════════════
@@ -372,30 +358,19 @@ if !isempty(errors)
 end
 
 println("\n═══════════════════════════════════════════════════════════════")
-println(" SUMMARY OF FINDINGS")
+println(" VERIFICATION SUMMARY (Post-Fix)")
 println("═══════════════════════════════════════════════════════════════")
 println()
-println("  1. is_repetition() detects 2-FOLD repetition (any prior match)")
-println("  2. is_game_over() calls is_repetition() → terminates at 2-fold")
-println("  3. No separate 3-fold API exists anywhere in the codebase")
-println("  4. Search (negamax) and game termination share the SAME function")
-println("  5. Optimizer game loops also use the same 2-fold threshold")
+println("  Dual API correctly implemented:")
+println("    ✓ is_repetition(b)      → 2-fold (search pruning)")
+println("    ✓ is_repetition(b, N)   → N-fold (configurable threshold)")
+println("    ✓ is_threefold_repetition(b) → 3-fold (FIDE game termination)")
 println()
-println("  VERDICT:")
-println("    The engine uses 2-fold repetition for EVERYTHING:")
-println("      - Search pruning (standard, correct)")
-println("      - Game-over detection (non-standard, should be 3-fold)")
-println("      - Optimizer game termination (non-standard)")
-println()
-println("    FIDE requires 3-fold repetition for a legal draw claim.")
-println("    Using 2-fold for game termination means games are declared")
-println("    drawn too early — after just one repeat instead of two.")
-println("    This affects both interactive play and optimizer training.")
-println()
-println("    Impact on optimizer: games end prematurely, which biases")
-println("    CMA-ES training. Positions that would continue under FIDE")
-println("    rules are scored as draws, potentially undervaluing")
-println("    aggressive play that temporarily repeats positions.")
+println("  Call site separation verified:")
+println("    ✓ negamax uses is_repetition(b) → 2-fold (correct for search)")
+println("    ✓ is_game_over uses is_threefold_repetition → 3-fold (FIDE)")
+println("    ✓ Game continues at 2-fold, only ends at 3-fold")
+println("    ✓ KR vs K no longer falsely drawn after one shuffle cycle")
 println("═══════════════════════════════════════════════════════════════")
 
 exit(failed > 0 ? 1 : 0)

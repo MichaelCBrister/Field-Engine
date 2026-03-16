@@ -317,16 +317,22 @@ let
          !is_repetition(b))
 end
 
-# Verify is_game_over includes repetition
+# Verify is_game_over uses threefold repetition (FIDE rules)
 let
     b = new_board()
     test("Fresh board: game not over", !is_game_over(b))
 
-    # Play the knight dance again: 1. Nf3 Nf6 2. Ng1 Ng8
+    # First cycle: 2-fold — game continues under FIDE rules
     for uci in ["g1f3", "g8f6", "f3g1", "f6g8"]
         apply_move!(b, find_move(b, uci))
     end
-    test("After repetition: is_game_over returns true", is_game_over(b))
+    test("After 2-fold: game NOT over (FIDE 3-fold required)", !is_game_over(b))
+
+    # Second cycle: 3-fold — now game is over
+    for uci in ["g1f3", "g8f6", "f3g1", "f6g8"]
+        apply_move!(b, find_move(b, uci))
+    end
+    test("After 3-fold: is_game_over returns true", is_game_over(b))
 end
 
 

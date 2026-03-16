@@ -360,15 +360,22 @@ let
     test("EP flag changes Zobrist hash", ep_hash != no_ep_hash)
 end
 
-# 3f. Repetition in game_over check
+# 3f. Repetition in game_over check (requires 3-fold under FIDE rules)
 let
     b = new_board()
     test("Fresh: game not over", !is_game_over(b))
 
+    # First cycle: 2-fold — game continues (search sees draw, but game is not over)
     for uci in ["g1f3", "g8f6", "f3g1", "f6g8"]
         apply_move!(b, find_move(b, uci))
     end
-    test("After repetition: is_game_over returns true", is_game_over(b))
+    test("After 2-fold: is_game_over returns false (FIDE)", !is_game_over(b))
+
+    # Second cycle: 3-fold — game is over
+    for uci in ["g1f3", "g8f6", "f3g1", "f6g8"]
+        apply_move!(b, find_move(b, uci))
+    end
+    test("After 3-fold: is_game_over returns true", is_game_over(b))
 end
 
 # 3g. Undo restores repetition state correctly
