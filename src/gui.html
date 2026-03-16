@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>FieldEngine</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #1e1e2e;
+      color: #cdd6f4;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    .container { display: flex; gap: 24px; align-items: flex-start; }
+
+    /* ── Board wrapper ───────────────────────────────────────── */
+    .board-wrap { display: flex; flex-direction: column; gap: 4px; }
+
+    .board-row  { display: flex; align-items: center; gap: 4px; }
+
+    .rank-labels {
+      display: grid;
+      grid-template-rows: repeat(8, 72px);
+      align-items: center;
+      width: 18px;
+    }
+    .rank-labels span, .file-labels span {
+      display: flex; align-items: center; justify-content: center;
+      font-size: 11px; font-family: monospace; color: #6c7086;
+    }
+
+    .file-labels {
+      display: grid;
+      grid-template-columns: repeat(8, 72px);
+      height: 18px;
+      margin-left: 22px; /* offset for rank-labels width + gap */
+    }
+
+    /* ── The board ───────────────────────────────────────────── */
+    #board {
+      display: grid;
+      grid-template-columns: repeat(8, 72px);
+      grid-template-rows: repeat(8, 72px);
+      border: 2px solid #45475a;
+      box-shadow: 0 16px 48px rgba(0,0,0,0.6);
+    }
+
+    .sq {
+      width: 72px; height: 72px;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer;
+      position: relative;
+      transition: filter 0.1s;
+      user-select: none;
+    }
+    .sq:hover { filter: brightness(1.12); }
+
+    .sq.light { background: #f0d9b5; }
+    .sq.dark  { background: #b58863; }
+
+    /* Highlight layers — stack via outline/box-shadow to preserve square color */
+    .sq.selected  { outline: 3px solid #7fc97f; outline-offset: -3px; background: rgba(127,201,127,0.55) !important; }
+    .sq.last-from { background: rgba(205,210,106,0.5) !important; }
+    .sq.last-to   { background: rgba(205,210,106,0.7) !important; }
+    .sq.in-check  { background: rgba(220,50,50,0.65)  !important; }
+
+    /* Legal-move hints */
+    .sq.hint::after {
+      content: '';
+      position: absolute;
+      width: 26px; height: 26px;
+      border-radius: 50%;
+      background: rgba(0,0,0,0.18);
+      pointer-events: none;
+    }
+    /* Capture hint: ring instead of dot */
+    .sq.hint.has-piece::after {
+      width: 68px; height: 68px;
+      border-radius: 0;
+      background: transparent;
+      border: 5px solid rgba(0,0,0,0.18);
+    }
+
+    /* ── Pieces ──────────────────────────────────────────────── */
+    .piece {
+      font-size: 50px;
+      line-height: 1;
+      position: relative;
+      z-index: 1;
+    }
+    /* White pieces: cream fill, heavy dark outline so they read on light squares */
+    .piece.white-piece {
+      color: #f5f0dc;
+      filter: drop-shadow(0 0 1px #000) drop-shadow(0 0 2px rgba(0,0,0,0.8))
+              drop-shadow(0 2px 4px rgba(0,0,0,0.6));
+    }
+    /* Black pieces: near-black fill, light halo so they read on dark squares */
+    .piece.black-piece {
+      color: #1a1a2e;
+      filter: drop-shadow(0 0 1px rgba(255,255,255,0.6))
+              drop-shadow(0 1px 3px rgba(0,0,0,0.5));
+    }
+
+    /* ── Side panel ──────────────────────────────────────────── */
+    .panel {
+      background: #313244;
+      border-radius: 14px;
+      padding: 20px 18px;
+      width: 230px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+    }
+
+    .panel-title { font-size: 20px; font-weight: 700; color: #cba6f7; letter-spacing: 0.5px; }
+    .panel-title span { font-size: 12px; font-weight: 400; color: #6c7086; margin-left: 6px; }
+
+    /* Status box */
+    .status-box {
+      background: #1e1e2e;
+      border-radius: 10px;
+      padding: 12px;
+      min-height: 90px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      font-size: 13px;
+    }
+    .s-turn  { font-weight: 700; font-size: 14px; }
+    .s-move  { color: #89b4fa; }
+    .s-score { color: #fab387; font-size: 12px; }
+    .s-result { font-weight: 700; font-size: 15px; color: #f9e2af; }
+
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.35} }
+    .thinking { color: #89b4fa; animation: pulse 1.2s infinite; }
+
+    /* Form controls */
+    .field label { display: block; font-size: 11px; color: #6c7086; margin-bottom: 4px; }
+
+    select {
+      width: 100%; background: #1e1e2e; color: #cdd6f4;
+      border: 1px solid #45475a; border-radius: 8px;
+      padding: 7px 10px; font-size: 13px; cursor: pointer;
+    }
+
+    .range-row { display: flex; align-items: center; gap: 8px; }
+    input[type=range] {
+      flex: 1; accent-color: #cba6f7; cursor: pointer;
+    }
+    .range-val { font-size: 13px; font-weight: 700; color: #cba6f7; width: 14px; text-align: center; }
+
+    /* Buttons */
+    .btn {
+      width: 100%; padding: 9px;
+      border: none; border-radius: 9px;
+      font-size: 13px; font-weight: 600;
+      cursor: pointer; transition: opacity 0.15s, transform 0.1s;
+    }
+    .btn:hover  { opacity: 0.88; }
+    .btn:active { transform: scale(0.97); }
+    .btn-primary   { background: #cba6f7; color: #1e1e2e; }
+    .btn-secondary { background: #45475a; color: #cdd6f4; }
+
+    .divider { border: none; border-top: 1px solid #45475a; }
+
+    /* ── Promotion modal ─────────────────────────────────────── */
+    #promo-overlay {
+      display: none;
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.72);
+      align-items: center; justify-content: center;
+      z-index: 200;
+    }
+    #promo-overlay.open { display: flex; }
+
+    .promo-box {
+      background: #313244; border-radius: 14px; padding: 24px;
+      text-align: center; box-shadow: 0 12px 40px rgba(0,0,0,0.6);
+    }
+    .promo-box h3 { margin-bottom: 16px; color: #cba6f7; font-size: 15px; }
+    .promo-row { display: flex; gap: 10px; }
+    .promo-btn {
+      width: 68px; height: 68px;
+      font-size: 46px; line-height: 68px;
+      background: #45475a; border: none; border-radius: 10px;
+      cursor: pointer; transition: background 0.12s;
+      padding: 0;
+    }
+    .promo-btn:hover { background: #585b70; }
+  </style>
+</head>
+<body>
+
+<div class="container">
+
+  <!-- Board area -->
+  <div class="board-wrap">
+    <div class="board-row">
+      <div class="rank-labels" id="rank-labels">
+        <span>8</span><span>7</span><span>6</span><span>5</span>
+        <span>4</span><span>3</span><span>2</span><span>1</span>
+      </div>
+      <div id="board"></div>
+    </div>
+    <div class="file-labels" id="file-labels">
+      <span>a</span><span>b</span><span>c</span><span>d</span>
+      <span>e</span><span>f</span><span>g</span><span>h</span>
+    </div>
+  </div>
+
+  <!-- Control panel -->
+  <div class="panel">
+    <div>
+      <div class="panel-title">FieldEngine <span>v0.1</span></div>
+    </div>
+
+    <div class="status-box">
+      <div class="s-turn"  id="s-turn">Loading…</div>
+      <div class="s-move"  id="s-move"></div>
+      <div class="s-score" id="s-score"></div>
+    </div>
+
+    <div class="field">
+      <label>Play as</label>
+      <select id="color-sel">
+        <option value="white">White (moves first)</option>
+        <option value="black">Black</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label>Engine depth</label>
+      <div class="range-row">
+        <input type="range" id="depth-sel" min="1" max="6" value="4"
+               oninput="document.getElementById('depth-val').textContent=this.value" />
+        <span class="range-val" id="depth-val">4</span>
+      </div>
+    </div>
+
+    <hr class="divider" />
+
+    <button class="btn btn-primary"   onclick="newGame()">New Game</button>
+    <button class="btn btn-secondary" onclick="flipBoard()">Flip Board</button>
+  </div>
+
+</div>
+
+<!-- Promotion modal -->
+<div id="promo-overlay">
+  <div class="promo-box">
+    <h3>Promote pawn to:</h3>
+    <div class="promo-row" id="promo-row"></div>
+  </div>
+</div>
+
+<script>
+// ── Piece glyphs ─────────────────────────────────────────────
+// Uses float-range comparisons instead of exact equality (safer with JSON floats).
+function pieceChar(v) {
+  const a = Math.abs(v), w = v > 0;
+  const i = a < 1.5 ? 0 : a < 3.1 ? 1 : a < 3.5 ? 2 : a < 7 ? 3 : a < 50 ? 4 : 5;
+  return w ? '♙♘♗♖♕♔'[i] : '♟♞♝♜♛♚'[i];
+}
+
+// ── State ────────────────────────────────────────────────────
+let state        = null;   // latest server response
+let selected     = null;   // {rank,file} currently selected square
+let legalMoves   = [];     // move strings from selected piece, e.g. ["e2e4","e2e3"]
+let flipped      = false;  // true = Black's perspective
+let pendingPromo = null;   // {from,to} while awaiting promotion choice
+let busy         = false;  // true while awaiting an engine response
+
+// ── API helpers ──────────────────────────────────────────────
+async function api(url, opts={}) {
+  const r = await fetch(url, opts);
+  if (!r.ok) { console.warn(url, r.status, await r.text()); return null; }
+  return r.json();
+}
+
+async function fetchState() {
+  state = await api('/state');
+  render();
+}
+
+async function newGame() {
+  if (busy) return;
+  const color = document.getElementById('color-sel').value;
+  const depth = parseInt(document.getElementById('depth-sel').value);
+  selected = null; legalMoves = [];
+  setBusy(true);
+  state = await api('/new_game', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({human: color, depth})
+  });
+  setBusy(false);
+  render();
+}
+
+async function sendMove(moveStr) {
+  if (busy) return;
+  selected = null; legalMoves = [];
+  setBusy(true);
+  render();   // show deselected board immediately
+  state = await api('/move', {
+    method: 'POST',
+    headers: {'Content-Type': 'text/plain'},
+    body: moveStr
+  });
+  setBusy(false);
+  render();
+}
+
+async function fetchLegal(coordStr) {
+  const data = await api(`/legal?from=${coordStr}`);
+  return data || [];
+}
+
+// ── Board coordinates ────────────────────────────────────────
+// sqIdx 0..63 → {rank, file} in 1-based board coordinates.
+// Unflipped: row 0 = rank 8 (top),  col 0 = file 1 (a-file, left).
+// Flipped:   row 0 = rank 1 (top),  col 0 = file 8 (h-file, left).
+function toRankFile(sqIdx) {
+  const row = Math.floor(sqIdx / 8), col = sqIdx % 8;
+  return flipped
+    ? {rank: row + 1,     file: 8 - col}
+    : {rank: 8 - row,     file: col + 1};
+}
+
+function toCoord(rank, file) {
+  return String.fromCharCode(96 + file) + rank;  // e.g. (2,5) → "e2"
+}
+
+function pieceAt(rank, file) {
+  if (!state?.pieces) return null;
+  for (const [r,f,v] of state.pieces)
+    if (r === rank && f === file) return v;
+  return null;
+}
+
+// ── Rendering ────────────────────────────────────────────────
+function render() { renderBoard(); renderStatus(); }
+
+function renderBoard() {
+  const board = document.getElementById('board');
+  board.innerHTML = '';
+
+  // Pre-compute hint destinations from current legal moves.
+  const hintDests = new Set(legalMoves.map(m => m.slice(2,4)));
+
+  // Last-move squares for highlight.
+  let lastFrom = '', lastTo = '';
+  if (state?.last_move?.length >= 4) {
+    lastFrom = state.last_move.slice(0,2);
+    lastTo   = state.last_move.slice(2,4);
+  }
+
+  // King square to highlight if in check.
+  let checkCoord = '';
+  if (state?.in_check) {
+    const sign = state.turn === 'white' ? 1 : -1;
+    for (const [r,f,v] of (state.pieces || []))
+      if (Math.abs(v) > 50 && Math.sign(v) === sign) { checkCoord = toCoord(r,f); break; }
+  }
+
+  for (let i = 0; i < 64; i++) {
+    const {rank, file} = toRankFile(i);
+    const coord = toCoord(rank, file);
+    const piece = pieceAt(rank, file);
+
+    const sq = document.createElement('div');
+    sq.className = 'sq ' + ((rank + file) % 2 === 0 ? 'dark' : 'light');
+
+    if (selected && selected.rank === rank && selected.file === file) sq.classList.add('selected');
+    if (coord === lastFrom) sq.classList.add('last-from');
+    if (coord === lastTo)   sq.classList.add('last-to');
+    if (coord === checkCoord) sq.classList.add('in-check');
+
+    if (hintDests.has(coord)) {
+      sq.classList.add('hint');
+      if (piece !== null) sq.classList.add('has-piece');
+    }
+
+    if (piece !== null) {
+      const span = document.createElement('span');
+      span.className = 'piece ' + (piece > 0 ? 'white-piece' : 'black-piece');
+      span.textContent = pieceChar(piece);
+      sq.appendChild(span);
+    }
+
+    sq.addEventListener('click', () => onSquareClick(rank, file, piece));
+    board.appendChild(sq);
+  }
+
+  // Rank labels: flip if needed.
+  const rl = document.getElementById('rank-labels');
+  rl.innerHTML = '';
+  for (let i = 0; i < 8; i++) {
+    const s = document.createElement('span');
+    s.textContent = flipped ? i + 1 : 8 - i;
+    rl.appendChild(s);
+  }
+
+  // File labels: flip if needed.
+  const fl = document.getElementById('file-labels');
+  fl.innerHTML = '';
+  for (let i = 0; i < 8; i++) {
+    const s = document.createElement('span');
+    s.textContent = String.fromCharCode(flipped ? 104 - i : 97 + i);  // h..a or a..h
+    fl.appendChild(s);
+  }
+}
+
+function renderStatus() {
+  const turnEl  = document.getElementById('s-turn');
+  const moveEl  = document.getElementById('s-move');
+  const scoreEl = document.getElementById('s-score');
+
+  if (busy) {
+    turnEl.innerHTML = '<span class="thinking">⚙ Engine thinking…</span>';
+    return;
+  }
+  if (!state) { turnEl.textContent = 'Loading…'; return; }
+
+  const st = state.status;
+  if (st === 'playing') {
+    const myTurn = state.turn === state.human;
+    turnEl.style.color = myTurn ? '#a6e3a1' : '#89b4fa';
+    turnEl.textContent  = myTurn ? '● Your turn' : '◌ Waiting…';
+  } else if (st === 'checkmate') {
+    const winner = state.turn === 'white' ? 'Black' : 'White';
+    turnEl.innerHTML = `<span class="s-result">${winner} wins! ♚</span>`;
+  } else if (st === 'stalemate') {
+    turnEl.innerHTML = `<span class="s-result">Stalemate — Draw</span>`;
+  } else if (st === 'draw50') {
+    turnEl.innerHTML = `<span class="s-result">Draw (50-move rule)</span>`;
+  }
+
+  moveEl.textContent  = state.last_move ? `Last: ${state.last_move}` : '';
+  scoreEl.textContent = state.last_move && state.score !== 0
+    ? `Score ${state.score >= 0 ? '+' : ''}${state.score.toFixed(3)} (White's view)` : '';
+}
+
+// ── Interaction ──────────────────────────────────────────────
+async function onSquareClick(rank, file, piece) {
+  if (busy || !state || state.status !== 'playing') return;
+  if (state.turn !== state.human) return;  // it's the engine's turn
+
+  const coord = toCoord(rank, file);
+
+  // If a piece is selected and the clicked square is a legal destination → move.
+  if (selected && legalMoves.length > 0) {
+    const candidates = legalMoves.filter(m => m.slice(2,4) === coord);
+    if (candidates.length > 0) {
+      const isPromo = candidates.some(m => m.length === 5);
+      if (isPromo) {
+        showPromoModal(candidates);
+      } else {
+        await sendMove(candidates[0]);
+      }
+      return;
+    }
+  }
+
+  // Select a friendly piece.
+  const humanSign = state.human === 'white' ? 1 : -1;
+  if (piece !== null && Math.sign(piece) === humanSign) {
+    selected = {rank, file};
+    legalMoves = await fetchLegal(coord);
+    renderBoard();
+  } else {
+    // Clicked empty or enemy square with nothing selected → deselect.
+    selected = null; legalMoves = [];
+    renderBoard();
+  }
+}
+
+// ── Promotion modal ──────────────────────────────────────────
+function showPromoModal(candidates) {
+  const isWhite = state.human === 'white';
+  const options = [
+    ['q', isWhite ? '♕' : '♛', 'Queen'],
+    ['r', isWhite ? '♖' : '♜', 'Rook'],
+    ['b', isWhite ? '♗' : '♝', 'Bishop'],
+    ['n', isWhite ? '♘' : '♞', 'Knight'],
+  ];
+  const row = document.getElementById('promo-row');
+  row.innerHTML = '';
+  for (const [suffix, ch] of options) {
+    const btn = document.createElement('button');
+    btn.className = 'promo-btn';
+    btn.textContent = ch;
+    btn.title = suffix;
+    btn.onclick = () => choosePromo(candidates, suffix);
+    row.appendChild(btn);
+  }
+  document.getElementById('promo-overlay').classList.add('open');
+}
+
+async function choosePromo(candidates, suffix) {
+  document.getElementById('promo-overlay').classList.remove('open');
+  const move = candidates.find(m => m.length === 5 && m[4] === suffix) || candidates[0];
+  await sendMove(move);
+}
+
+// ── Busy state ───────────────────────────────────────────────
+function setBusy(on) {
+  busy = on;
+  renderStatus();
+}
+
+function flipBoard() {
+  flipped = !flipped;
+  render();
+}
+
+// ── Boot ─────────────────────────────────────────────────────
+fetchState();
+</script>
+</body>
+</html>

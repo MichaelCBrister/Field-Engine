@@ -1,0 +1,9 @@
+*.pem
+*.key
+*.p12
+*.pfx
+bin/stockfish
+bin/stockfish.exe
+.DS_Store
+.claude/
+.vscode/
