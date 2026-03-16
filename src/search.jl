@@ -273,14 +273,18 @@ end
     update_piece_field!(field, b, tr, tf, 1)
     for sq in from_buf
         update_piece_field!(field, b, sq[1], sq[2], 1)
-        seen[sq[1], sq[2]] = false
+        # Keep seen=true so to_buf loop below skips pieces already added here
     end
     if captured == 0.0
         for sq in to_buf
             sq == (fr, ff)    && continue
-            seen[sq[1], sq[2]] && continue
+            seen[sq[1], sq[2]] && continue  # skip if already added via from_buf
             update_piece_field!(field, b, sq[1], sq[2], 1)
         end
+    end
+    # Reset seen flags now that both add loops are done
+    for sq in from_buf
+        seen[sq[1], sq[2]] = false
     end
 
     return undo
