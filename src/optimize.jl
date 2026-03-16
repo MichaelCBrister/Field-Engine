@@ -692,7 +692,7 @@ function play_game(w_white::Vector{Float64}, w_black::Vector{Float64};
 
     for _ in 1:max_moves
         b.halfmove >= 100 && return 0.0
-        is_repetition(b) && return 0.0
+        is_threefold_repetition(b) && return 0.0
 
         State.generate_moves!(legal_buf, b, pseudo_buf)
         if isempty(legal_buf)
@@ -759,7 +759,7 @@ function play_game_vs_stockfish(w_cand::Vector{Float64}, cand_as_white::Bool;
 
     for _ in 1:max_moves
         b.halfmove >= 100 && return 0.0
-        is_repetition(b) && return 0.0
+        is_threefold_repetition(b) && return 0.0
 
         State.generate_moves!(legal_buf, b, pseudo_buf)
         if isempty(legal_buf)

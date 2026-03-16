@@ -59,7 +59,7 @@ export WHITE, BLACK, EMPTY
 export PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING
 export piece_at, is_empty, is_color, piece_type, piece_color
 export Move, move_to_string, apply_move!, undo_move!, generate_moves, generate_moves!
-export find_king, is_in_check, is_checkmate, is_stalemate, is_game_over, game_result, is_repetition
+export find_king, is_in_check, is_checkmate, is_stalemate, is_game_over, game_result, is_repetition, is_threefold_repetition
 export sync_board!
 export ZOBRIST_SIDE, ZOBRIST_EP  # needed by optimize.jl for null-move hash updates
 
@@ -843,9 +843,28 @@ end
 
 # ── Game State Detection ───────────────────────────────────────
 
+# ============================================================================
+# Repetition Detection: Two-Fold (Search) vs Three-Fold (Game Termination)
+# ============================================================================
+#
+# Two separate functions ensure correct behavior in different contexts:
+#
+# 1. is_repetition(b, threshold=2)
+#    - Default threshold=2 for search pruning (standard engine practice)
+#    - Prevents infinite loops in negamax/qsearch
+#    - Called from search.jl with threshold=2
+#
+# 2. is_threefold_repetition(b)
+#    - Threshold=3 for legal game termination (FIDE rules)
+#    - Called from play_game(), is_game_over(), and play.jl
+#    - Ensures games don't terminate prematurely
+#
+# This separation was added to fix: https://github.com/MichaelCBrister/Field-Engine/issues/1
+# ============================================================================
+
 #= ── Repetition Detection ─────────────────────────────────────
    Returns true if the current position (b.hash) has been seen
-   before in the game/search history.
+   at least `threshold` times in the game/search history.
 
    The Zobrist hash already encodes piece placement, side to move,
    castling rights, and en passant — so equal hashes mean equal
@@ -860,15 +879,42 @@ end
    cycles and is conservative (the game WILL be drawn if neither
    side deviates from the loop).
 =#
-function is_repetition(b::Board)::Bool
+
+"""
+    is_repetition(b::Board, threshold::Int=2)
+
+Check if the current position has occurred at least `threshold` times total
+(including the current occurrence). The history vector holds previous positions,
+so we look for `threshold - 1` prior matches.
+
+Default threshold=2 means 2-fold (current + 1 prior match), used for search
+anti-loop pruning (standard engine practice).
+"""
+function is_repetition(b::Board, threshold::Int=2)::Bool
     h = b.hash
     n = length(b.history)
     # Positions before the last irreversible move can't repeat
     check = min(b.halfmove, n)
+    count = 0
     @inbounds for i in (n - check + 1):n
-        b.history[i] == h && return true
+        if b.history[i] == h
+            count += 1
+            # threshold - 1 prior matches in history = threshold total occurrences
+            count >= threshold - 1 && return true
+        end
     end
     return false
+end
+
+"""
+    is_threefold_repetition(b::Board)
+
+Check if the current position has occurred exactly 3 times in history.
+Used for legal game termination under FIDE rules.
+Separate from is_repetition() to ensure game-over logic uses correct threshold.
+"""
+function is_threefold_repetition(b::Board)::Bool
+    is_repetition(b, 3)
 end
 
 function is_checkmate(b::Board)
@@ -880,7 +926,7 @@ function is_stalemate(b::Board)
 end
 
 function is_game_over(b::Board)
-    isempty(generate_moves(b)) || b.halfmove ≥ 100 || is_repetition(b)
+    isempty(generate_moves(b)) || b.halfmove ≥ 100 || is_threefold_repetition(b)
 end
 
 function game_result(b::Board)
