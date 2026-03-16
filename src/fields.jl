@@ -150,9 +150,10 @@ matching how a rook moves in chess.
 """
 function compute_sliding_field!(field::Matrix{Float64}, b::Board,
                                  pr::Int, pf::Int, Q::Float64,
-                                 directions::Vector{Tuple{Int,Int}})
+                                 directions)
     # The piece's own square gets the full charge
     # (We handle this in compute_piece_field so we don't double-count)
+    g = b.grid
 
     for (dr, df) in directions
         # Walk along this ray
@@ -162,14 +163,10 @@ function compute_sliding_field!(field::Matrix{Float64}, b::Board,
         while State.in_bounds(r, f)
             # Field decays with distance squared: Q * 1/(1+d²)
             # SLIDING_DECAY is pre-computed to avoid division in tight loop.
-            field[r, f] += Q * @inbounds SLIDING_DECAY[dist]
+            @inbounds field[r, f] += Q * SLIDING_DECAY[dist]
 
             # If this square has a piece, the ray is blocked
-            # (We still added the field AT this square — you can
-            #  see a piece that blocks you, you just can't see past it)
-            if !is_empty(b, r, f)
-                break
-            end
+            @inbounds g[r, f] != 0.0 && break
 
             # Continue along the ray
             dist += 1
@@ -473,11 +470,12 @@ Use this in hot paths (search, optimizer) to eliminate per-call allocation.
 """
 function compute_total_field!(field::Matrix{Float64}, b::Board)
     fill!(field, 0.0)
+    g = b.grid
     for r in 1:8, f in 1:8
-        Q = piece_at(b, r, f)
+        @inbounds Q = g[r, f]
         Q == 0.0 && continue
         pt = abs(Q)
-        field[r, f] += Q
+        @inbounds field[r, f] += Q
         if pt == PAWN
             compute_pawn_field!(field, b, r, f, Q)
         elseif pt == KNIGHT
@@ -677,14 +675,16 @@ Use this in hot paths to eliminate the per-call matrix allocation.
 """
 function compute_mobility_count(b::Board, color::Int)::Float64
     total = 0.0
+    g = b.grid
     for r in 1:8, f in 1:8
-        is_color(b, r, f, color) || continue
-        pt = piece_type(b, r, f)
+        @inbounds v = g[r, f]
+        (v > 0) == (color > 0) && v != 0.0 || continue
+        pt = abs(v)
 
         if pt == PAWN
             dir = color
             nr  = r + dir
-            if State.in_bounds(nr, f) && is_empty(b, nr, f)
+            if State.in_bounds(nr, f) && @inbounds(g[nr, f]) == 0.0
                 total += 1.0
             end
             for df in (-1, 1)
@@ -695,18 +695,44 @@ function compute_mobility_count(b::Board, color::Int)::Float64
         elseif pt == KNIGHT
             for (dr, df) in State.KNIGHT_JUMPS
                 nr, nf = r + dr, f + df
-                State.in_bounds(nr, nf) && !is_color(b, nr, nf, color) && (total += 1.0)
+                if State.in_bounds(nr, nf)
+                    @inbounds nv = g[nr, nf]
+                    ((nv > 0) != (color > 0) || nv == 0.0) && (total += 1.0)
+                end
             end
 
-        elseif pt == BISHOP || pt == ROOK || pt == QUEEN
-            dirs = pt == BISHOP ? State.BISHOP_DIRS :
-                   pt == ROOK   ? State.ROOK_DIRS   : State.QUEEN_DIRS
-            for (dr, df) in dirs
+        elseif pt == BISHOP
+            for (dr, df) in State.BISHOP_DIRS
                 nr, nf = r + dr, f + df
                 while State.in_bounds(nr, nf)
-                    is_color(b, nr, nf, color) && break
+                    @inbounds nv = g[nr, nf]
+                    (nv > 0) == (color > 0) && nv != 0.0 && break
                     total += 1.0
-                    !is_empty(b, nr, nf) && break
+                    nv != 0.0 && break
+                    nr += dr; nf += df
+                end
+            end
+
+        elseif pt == ROOK
+            for (dr, df) in State.ROOK_DIRS
+                nr, nf = r + dr, f + df
+                while State.in_bounds(nr, nf)
+                    @inbounds nv = g[nr, nf]
+                    (nv > 0) == (color > 0) && nv != 0.0 && break
+                    total += 1.0
+                    nv != 0.0 && break
+                    nr += dr; nf += df
+                end
+            end
+
+        elseif pt == QUEEN
+            for (dr, df) in State.QUEEN_DIRS
+                nr, nf = r + dr, f + df
+                while State.in_bounds(nr, nf)
+                    @inbounds nv = g[nr, nf]
+                    (nv > 0) == (color > 0) && nv != 0.0 && break
+                    total += 1.0
+                    nv != 0.0 && break
                     nr += dr; nf += df
                 end
             end
@@ -714,7 +740,10 @@ function compute_mobility_count(b::Board, color::Int)::Float64
         elseif pt == KING
             for (dr, df) in State.KING_DIRS
                 nr, nf = r + dr, f + df
-                State.in_bounds(nr, nf) && !is_color(b, nr, nf, color) && (total += 1.0)
+                if State.in_bounds(nr, nf)
+                    @inbounds nv = g[nr, nf]
+                    ((nv > 0) != (color > 0) || nv == 0.0) && (total += 1.0)
+                end
             end
         end
     end
@@ -850,12 +879,13 @@ end
 function _sliding_field_delta!(field::Matrix{Float64}, b::Board,
                                 pr::Int, pf::Int, Q_delta::Float64,
                                 directions)
+    g = b.grid
     for (dr, df) in directions
         dist = 1
         r, f = pr + dr, pf + df
         while State.in_bounds(r, f)
-            field[r, f] += Q_delta * @inbounds SLIDING_DECAY[dist]
-            is_empty(b, r, f) || break
+            @inbounds field[r, f] += Q_delta * SLIDING_DECAY[dist]
+            @inbounds g[r, f] != 0.0 && break
             dist += 1
             r += dr; f += df
         end
@@ -944,11 +974,12 @@ piece is a slider capable of projecting along that direction, then
 (r, f) is on its ray.
 """
 function find_ray_blockers!(buf::Vector{Tuple{Int,Int}}, b::Board, r::Int, f::Int)
+    g = b.grid
     # Rook-type rays (rank + file) → look for rooks or queens
     for (dr, df) in State.ROOK_DIRS
         nr, nf = r - dr, f - df          # scan backward toward the potential slider
         while State.in_bounds(nr, nf)
-            Q = b.grid[nr, nf]
+            @inbounds Q = g[nr, nf]
             if Q != 0.0
                 pt = abs(Q)
                 (pt == ROOK || pt == QUEEN) && push!(buf, (nr, nf))
@@ -961,7 +992,7 @@ function find_ray_blockers!(buf::Vector{Tuple{Int,Int}}, b::Board, r::Int, f::In
     for (dr, df) in State.BISHOP_DIRS
         nr, nf = r - dr, f - df
         while State.in_bounds(nr, nf)
-            Q = b.grid[nr, nf]
+            @inbounds Q = g[nr, nf]
             if Q != 0.0
                 pt = abs(Q)
                 (pt == BISHOP || pt == QUEEN) && push!(buf, (nr, nf))

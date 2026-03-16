@@ -571,12 +571,13 @@ end
     - King: 8 adjacent squares + castling
 =#
 
-# Direction vectors for sliding pieces
-const ROOK_DIRS   = [(1,0), (-1,0), (0,1), (0,-1)]
-const BISHOP_DIRS = [(1,1), (1,-1), (-1,1), (-1,-1)]
-const QUEEN_DIRS  = [ROOK_DIRS; BISHOP_DIRS]
-const KNIGHT_JUMPS = [(2,1),(2,-1),(-2,1),(-2,-1),(1,2),(1,-2),(-1,2),(-1,-2)]
-const KING_DIRS   = QUEEN_DIRS  # King moves like queen but 1 step
+# Direction tuples for sliding pieces — tuples (not vectors) enable
+# loop unrolling and eliminate heap indirection in the hot path.
+const ROOK_DIRS    = ((1,0), (-1,0), (0,1), (0,-1))
+const BISHOP_DIRS  = ((1,1), (1,-1), (-1,1), (-1,-1))
+const QUEEN_DIRS   = (ROOK_DIRS..., BISHOP_DIRS...)
+const KNIGHT_JUMPS = ((2,1),(2,-1),(-2,1),(-2,-1),(1,2),(1,-2),(-1,2),(-1,-2))
+const KING_DIRS    = QUEEN_DIRS  # King moves like queen but 1 step
 const PROMOTION_PIECES = (QUEEN, ROOK, BISHOP, KNIGHT)
 
 function generate_pseudo_legal(b::Board)::Vector{Move}
@@ -656,14 +657,16 @@ function gen_pawn_moves!(moves, b, r, f, color)
 end
 
 function gen_sliding_moves!(moves, b, r, f, color, directions)
+    g = b.grid
     # Slide along each direction until hitting the edge or a piece
     for (dr, df) in directions
         nr, nf = r + dr, f + df
         while in_bounds(nr, nf)
-            if is_empty(b, nr, nf)
+            @inbounds v = g[nr, nf]
+            if v == 0.0
                 push!(moves, Move(r, f, nr, nf))
-            elseif is_color(b, nr, nf, -color)
-                piece_type(b, nr, nf) != KING && push!(moves, Move(r, f, nr, nf))  # Capture
+            elseif sign(v) == -color
+                abs(v) != KING && push!(moves, Move(r, f, nr, nf))  # Capture
                 break  # Can't slide through a piece
             else
                 break  # Blocked by own piece
@@ -674,11 +677,13 @@ function gen_sliding_moves!(moves, b, r, f, color, directions)
 end
 
 function gen_jump_moves!(moves, b, r, f, color, jumps)
+    g = b.grid
     for (dr, df) in jumps
         nr, nf = r + dr, f + df
         if !in_bounds(nr, nf); continue; end
-        if is_color(b, nr, nf, color); continue; end  # Can't capture own piece
-        if is_color(b, nr, nf, -color) && piece_type(b, nr, nf) == KING; continue; end
+        @inbounds v = g[nr, nf]
+        sign(v) == color && continue  # Can't capture own piece
+        sign(v) == -color && abs(v) == KING && continue
         push!(moves, Move(r, f, nr, nf))
     end
 end
@@ -731,31 +736,33 @@ end
 =#
 
 function is_square_attacked(b::Board, r, f, attacker)
+    g = b.grid
+    att_pawn   = attacker * PAWN
+    att_knight = attacker * KNIGHT
+    att_king   = attacker * KING
+
     # Pawn attacks
     pawn_dir = -attacker  # Pawns attack in opposite direction of movement
-    for df in (-1, 1)
-        pr, pf = r + pawn_dir, f + df
-        if in_bounds(pr, pf) && piece_at(b, pr, pf) == attacker * PAWN
-            return true
-        end
+    pr = r + pawn_dir
+    if 1 ≤ pr ≤ 8
+        f > 1 && @inbounds(g[pr, f - 1]) == att_pawn && return true
+        f < 8 && @inbounds(g[pr, f + 1]) == att_pawn && return true
     end
 
     # Knight attacks
     for (dr, df) in KNIGHT_JUMPS
         nr, nf = r + dr, f + df
-        if in_bounds(nr, nf) && piece_at(b, nr, nf) == attacker * KNIGHT
-            return true
-        end
+        in_bounds(nr, nf) && @inbounds(g[nr, nf]) == att_knight && return true
     end
 
     # Sliding attacks (rook/queen along ranks+files, bishop/queen along diags)
     for (dr, df) in ROOK_DIRS
         nr, nf = r + dr, f + df
         while in_bounds(nr, nf)
-            v = piece_at(b, nr, nf)
+            @inbounds v = g[nr, nf]
             if v != 0.0
                 av = abs(v)
-                if sign(v) == attacker && (av == ROOK || av == QUEEN)
+                if (v > 0) == (attacker > 0) && (av == ROOK || av == QUEEN)
                     return true
                 end
                 break  # Blocked
@@ -767,10 +774,10 @@ function is_square_attacked(b::Board, r, f, attacker)
     for (dr, df) in BISHOP_DIRS
         nr, nf = r + dr, f + df
         while in_bounds(nr, nf)
-            v = piece_at(b, nr, nf)
+            @inbounds v = g[nr, nf]
             if v != 0.0
                 av = abs(v)
-                if sign(v) == attacker && (av == BISHOP || av == QUEEN)
+                if (v > 0) == (attacker > 0) && (av == BISHOP || av == QUEEN)
                     return true
                 end
                 break
@@ -782,9 +789,7 @@ function is_square_attacked(b::Board, r, f, attacker)
     # King attacks (adjacent squares)
     for (dr, df) in KING_DIRS
         nr, nf = r + dr, f + df
-        if in_bounds(nr, nf) && piece_at(b, nr, nf) == attacker * KING
-            return true
-        end
+        in_bounds(nr, nf) && @inbounds(g[nr, nf]) == att_king && return true
     end
 
     return false
