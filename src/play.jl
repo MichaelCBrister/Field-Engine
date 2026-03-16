@@ -127,7 +127,7 @@ function play(; human_color::Int = WHITE, max_depth::Int = 4)
         println("  White wins by checkmate!")
     elseif result == BLACK
         println("  Black wins by checkmate!")
-    elseif is_repetition(b)
+    elseif is_threefold_repetition(b)
         println("  Draw by repetition.")
     elseif b.halfmove ≥ 100
         println("  Draw by the 50-move rule.")
