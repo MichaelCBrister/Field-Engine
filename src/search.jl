@@ -48,6 +48,52 @@ const MAX_PLY         = 64        # initial pre-allocation depth; grows if neede
 # Total buffer slots: one per Julia thread (default + interactive pools).
 const _NBUFS = Threads.nthreads() + Threads.nthreads(:interactive)
 
+# ── Search context (deadline / stop control) ─────────────────
+# Tracks search deadline and external stop signals so callers can
+# limit wall-clock time per move.  Optional: passing `nothing`
+# disables all deadline checks (backward-compatible default).
+
+mutable struct SearchContext
+    start_time::UInt64          # Wall-clock start (from time_ns())
+    deadline_ns::UInt64         # Deadline in nanoseconds (absolute)
+    node_count::Int             # Nodes since last time check
+    stop_flag::Threads.Atomic{Bool}  # External stop signal (thread-safe)
+end
+
+"""
+    SearchContext(deadline_seconds::Float64)
+
+Create a search context with the given wall-clock deadline.
+`SearchContext(Inf)` creates a context that never expires.
+"""
+function SearchContext(deadline_seconds::Float64)
+    now = time_ns()
+    deadline = deadline_seconds == Inf ? typemax(UInt64) :
+               now + UInt64(min(deadline_seconds, 1e12) * 1e9)
+    return SearchContext(now, deadline, 0, Threads.Atomic{Bool}(false))
+end
+
+"""
+    should_stop(ctx::SearchContext, check_interval::Int=1024)::Bool
+
+Return `true` if the search should stop (deadline exceeded or external
+stop flag set).  Only checks wall-clock time every `check_interval`
+nodes to avoid syscall overhead.
+"""
+@inline function should_stop(ctx::SearchContext, check_interval::Int=1024)::Bool
+    # Fast path: external stop signal
+    ctx.stop_flag[] && return true
+    # Periodic time check
+    ctx.node_count += 1
+    if ctx.node_count >= check_interval
+        ctx.node_count = 0
+        return time_ns() >= ctx.deadline_ns
+    end
+    return false
+end
+
+export SearchContext, should_stop
+
 # ── Search statistics ─────────────────────────────────────────
 # Per-thread counters for verbose output in best_move.
 # The optimizer ignores these — the overhead is one increment per node.
@@ -327,7 +373,13 @@ function qsearch(b::Board, w::Vector{Float64},
                  α::Float64, β::Float64,
                  field::Matrix{Float64},
                  ply::Int,
-                 tt::Vector{TTEntry})::Float64
+                 tt::Vector{TTEntry},
+                 ctx::Union{SearchContext, Nothing} = nothing)::Float64
+    # Early exit on deadline
+    if ctx !== nothing && should_stop(ctx)
+        return α
+    end
+
     tid = Threads.threadid()
     _STATS[tid].qnodes += 1
 
@@ -372,7 +424,7 @@ function qsearch(b::Board, w::Vector{Float64},
 
         copyto!(fstack[ply], field)
         undo  = apply_with_field!(field, b, m, from_buf, to_buf, seen)
-        score = -qsearch(b, w, -β, -α, field, ply + 1, tt)
+        score = -qsearch(b, w, -β, -α, field, ply + 1, tt, ctx)
         undo_move!(b, m, undo)
         copyto!(field, fstack[ply])
 
@@ -402,7 +454,13 @@ function negamax(b::Board, w::Vector{Float64},
                  field::Matrix{Float64},
                  ply::Int,
                  tt::Vector{TTEntry},
-                 is_null::Bool = false)::Float64
+                 is_null::Bool = false,
+                 ctx::Union{SearchContext, Nothing} = nothing)::Float64
+    # Early exit on deadline
+    if ctx !== nothing && should_stop(ctx)
+        return α
+    end
+
     tid = Threads.threadid()
     _STATS[tid].nodes += 1
 
@@ -416,7 +474,7 @@ function negamax(b::Board, w::Vector{Float64},
     hit !== nothing && return hit
 
     # ── Terminal: enter quiescence ───────────────────────────────
-    depth == 0 && return qsearch(b, w, α, β, field, ply, tt)
+    depth == 0 && return qsearch(b, w, α, β, field, ply, tt, ctx)
 
     ensure_ply_buffers!(tid, ply)
     legal_buf  = LEGAL_BUFS[tid][ply]
@@ -442,7 +500,7 @@ function negamax(b::Board, w::Vector{Float64},
         end
 
         null_score = -negamax(b, w, depth - 1 - R, -β, -β + 1.0,
-                              field, ply + 1, tt, true)
+                              field, ply + 1, tt, true, ctx)
 
         b.turn       = -b.turn
         b.hash       ⊻= ZOBRIST_SIDE
@@ -490,22 +548,22 @@ function negamax(b::Board, w::Vector{Float64},
 
         if move_idx > 4 && depth >= 3 && is_quiet && !in_check
             score = -negamax(b, w, depth - 2, -α - 1.0, -α,
-                             field, ply + 1, tt, false)
+                             field, ply + 1, tt, false, ctx)
             if score > α
                 score = -negamax(b, w, depth - 1, -α - 1.0, -α,
-                                 field, ply + 1, tt, false)
+                                 field, ply + 1, tt, false, ctx)
             end
         elseif move_idx > 1
             score = -negamax(b, w, depth - 1, -α - 1.0, -α,
-                             field, ply + 1, tt, false)
+                             field, ply + 1, tt, false, ctx)
         else
             score = -negamax(b, w, depth - 1, -β, -α,
-                             field, ply + 1, tt, false)
+                             field, ply + 1, tt, false, ctx)
         end
 
         if move_idx > 1 && score > α && score < β
             score = -negamax(b, w, depth - 1, -β, -α,
-                             field, ply + 1, tt, false)
+                             field, ply + 1, tt, false, ctx)
         end
 
         undo_move!(b, m, undo)
@@ -535,7 +593,8 @@ function choose_move!(b::Board,
                       field::Matrix{Float64},
                       tt::Vector{TTEntry},
                       tid::Int,
-                      legal_buf::Vector{Move})::Move
+                      legal_buf::Vector{Move},
+                      ctx::Union{SearchContext, Nothing} = nothing)::Move
     fstack    = FIELD_STACK[tid]
     from_buf  = FROM_SLIDERS[tid]
     to_buf    = TO_SLIDERS[tid]
@@ -547,6 +606,11 @@ function choose_move!(b::Board,
     best_m = legal_buf[1]
 
     for d in 1:depth
+        # Check deadline before starting a new depth iteration
+        if ctx !== nothing && should_stop(ctx)
+            break
+        end
+
         n_moves = length(legal_buf)
         resize!(score_buf, n_moves)
         for i in 1:n_moves
@@ -572,14 +636,14 @@ function choose_move!(b::Board,
             local score::Float64
             if move_idx > 1
                 score = -negamax(b, w, d - 1, -best_s - 1.0, -best_s,
-                                 field, 2, tt, false)
+                                 field, 2, tt, false, ctx)
                 if score > best_s
                     score = -negamax(b, w, d - 1, -INF, INF,
-                                     field, 2, tt, false)
+                                     field, 2, tt, false, ctx)
                 end
             else
                 score = -negamax(b, w, d - 1, -INF, INF,
-                                 field, 2, tt, false)
+                                 field, 2, tt, false, ctx)
             end
 
             undo_move!(b, m, undo)
@@ -600,7 +664,8 @@ end
 # TT, computes the initial field, uses default weights from energy.jl.
 # Returns (best_move, score) where score is from White's perspective.
 function best_move(b::Board; max_depth::Int = 4,
-                   verbose::Bool = false)::Tuple{Move, Float64}
+                   verbose::Bool = false,
+                   deadline_seconds::Float64 = Inf)::Tuple{Move, Float64}
     sync_board!(b)
     moves = generate_moves(b)
     isempty(moves) && error("No legal moves — position is terminal")
@@ -609,6 +674,8 @@ function best_move(b::Board; max_depth::Int = 4,
         verbose && println("  (forced move: $(move_to_string(moves[1])))")
         return (moves[1], Float64(b.turn) * Energy.evaluate(b))
     end
+
+    ctx = isfinite(deadline_seconds) ? SearchContext(deadline_seconds) : nothing
 
     tid = Threads.threadid()
     ensure_ply_buffers!(tid, 2)
@@ -632,6 +699,11 @@ function best_move(b::Board; max_depth::Int = 4,
     best_s = 0.0
 
     for depth in 1:max_depth
+        # Check deadline before starting a new depth iteration
+        if ctx !== nothing && should_stop(ctx)
+            break
+        end
+
         n_moves = length(moves)
         resize!(score_buf, n_moves)
         for i in 1:n_moves
@@ -659,14 +731,14 @@ function best_move(b::Board; max_depth::Int = 4,
             local score::Float64
             if move_idx > 1
                 score = -negamax(b, w, depth - 1, -depth_best_s - 1.0, -depth_best_s,
-                                 field, 2, tt, false)
+                                 field, 2, tt, false, ctx)
                 if score > depth_best_s
                     score = -negamax(b, w, depth - 1, -INF, INF,
-                                     field, 2, tt, false)
+                                     field, 2, tt, false, ctx)
                 end
             else
                 score = -negamax(b, w, depth - 1, -INF, INF,
-                                 field, 2, tt, false)
+                                 field, 2, tt, false, ctx)
             end
 
             undo_move!(b, m, undo)
