@@ -290,9 +290,22 @@ end
 
     # Phase 3: add new contributions using updated board
     update_piece_field!(field, b, tr, tf, 1)
+    # from_buf may contain duplicates when a slider is blocked by both the ep
+    # captured pawn square AND the moving pawn's source square.  Phase 1 already
+    # guarded against double-subtraction using seen; here we need the symmetric
+    # guard for addition.
+    #
+    # seen is currently true for all from_buf entries (set in Phase 1).
+    # Reset it first so we can re-use seen as an "already added" tracker:
+    # first occurrence → seen=false → add, set seen=true
+    # duplicate        → seen=true  → skip
     for sq in from_buf
+        seen[sq[1], sq[2]] = false
+    end
+    for sq in from_buf
+        seen[sq[1], sq[2]] && continue    # duplicate — already added
         update_piece_field!(field, b, sq[1], sq[2], 1)
-        # Keep seen=true so to_buf loop below skips pieces already added here
+        seen[sq[1], sq[2]] = true         # mark so to_buf loop skips this sq
     end
     if captured == 0.0
         for sq in to_buf
