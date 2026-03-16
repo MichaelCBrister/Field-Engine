@@ -49,6 +49,51 @@ include(joinpath(@__DIR__, "search.jl"))
 using .State, .Fields, .Energy, .Search
 using Printf, Random, LinearAlgebra
 
+# ── JSON helpers (no dependency) ────────────────────────────────
+# Minimal JSON serialization for checkpoint files. Avoids pulling in
+# the JSON.jl package (slow precompile, unnecessary dependency).
+function _json_encode(io::IO, v::Float64)
+    if isnan(v); print(io, "null")
+    elseif isinf(v); print(io, v > 0 ? "1e308" : "-1e308")
+    else @printf(io, "%.10g", v)
+    end
+end
+function _json_encode(io::IO, v::Int)
+    print(io, v)
+end
+function _json_encode(io::IO, v::String)
+    print(io, '"', replace(replace(v, '\\' => "\\\\"), '"' => "\\\""), '"')
+end
+function _json_encode(io::IO, v::Vector{Float64})
+    print(io, '[')
+    for (i, x) in enumerate(v)
+        i > 1 && print(io, ", ")
+        _json_encode(io, x)
+    end
+    print(io, ']')
+end
+function _json_encode(io::IO, v::Vector{Vector{Float64}})
+    print(io, '[')
+    for (i, row) in enumerate(v)
+        i > 1 && print(io, ", ")
+        _json_encode(io, row)
+    end
+    print(io, ']')
+end
+function _json_encode(io::IO, d::Dict)
+    print(io, "{\n")
+    first = true
+    for (k, v) in sort(collect(d), by=x->string(x[1]))
+        first || print(io, ",\n")
+        first = false
+        print(io, "  ")
+        _json_encode(io, string(k))
+        print(io, ": ")
+        _json_encode(io, v)
+    end
+    print(io, "\n}")
+end
+
 # ── Baseline weights ─────────────────────────────────────────────
 # Starting point for optimization. Pulled from energy.jl so optimizer and
 # interactive engine stay in sync by default.
@@ -667,6 +712,36 @@ function load_checkpoint(path::String)
     end
 end
 
+# ── JSON checkpoint (every N generations) ─────────────────────────
+# Saves best params + stats to a human-readable JSON file.
+# Complements the per-gen plain-text checkpoint with a richer snapshot
+# at configurable intervals (default: every 50 gens).
+const JSON_CHECKPOINT_INTERVAL = 50
+
+function save_json_checkpoint(path::String, gen::Int,
+                               best_f::Float64, best_x::Vector{Float64},
+                               σ::Float64, m::Vector{Float64},
+                               fitness_history::Vector{Float64},
+                               gen_times::Vector{Float64})
+    tmp = path * ".tmp"
+    open(tmp, "w") do io
+        d = Dict{String, Any}(
+            "generation"       => gen,
+            "best_fitness"     => best_f,
+            "best_weights"     => best_x,
+            "sigma"            => σ,
+            "mean"             => m,
+            "fitness_history"  => fitness_history,
+            "gen_times_s"      => gen_times,
+            "avg_gen_time_s"   => isempty(gen_times) ? 0.0 : sum(gen_times) / length(gen_times),
+            "total_time_s"     => isempty(gen_times) ? 0.0 : sum(gen_times),
+        )
+        _json_encode(io, d)
+        println(io)
+    end
+    mv(tmp, path, force=true)
+end
+
 # ── Single self-play game ────────────────────────────────────────
 # Each game gets its own fresh TT (no cross-game pollution).
 # Field is initialized once and maintained incrementally through play.
@@ -993,7 +1068,26 @@ function cmaes(batch_f, x0::Vector{Float64};
     early_stop_window = 15
     early_stop_threshold = 0.005
 
+    # ── Plateau detection ────────────────────────────────────────
+    # Separate from early stopping: warns when best_f hasn't improved
+    # by > 0.001 for 30 consecutive generations. Does NOT stop — just
+    # logs a warning so the operator can decide whether to intervene.
+    PLATEAU_WINDOW    = 30
+    PLATEAU_THRESHOLD = 0.001
+    plateau_warned = false     # only warn once per plateau
+
+    # ── Per-generation timing ────────────────────────────────────
+    gen_times = Float64[]
+
+    # ── JSON checkpoint path ─────────────────────────────────────
+    json_checkpoint_path = if checkpoint_path != ""
+        replace(checkpoint_path, r"\.\w+$" => "") * "_snapshot.json"
+    else
+        ""
+    end
+
     for gen in gen_start:max_gen
+        gen_t0 = time()
 
         # ── Sample λ candidates ──────────────────────────────────
         L = try
@@ -1088,6 +1182,10 @@ function cmaes(batch_f, x0::Vector{Float64};
             ROLLING_BASELINE[] = copy(clamp_weights(best_x))
         end
 
+        # ── Per-gen timing ─────────────────────────────────────────
+        gen_elapsed = time() - gen_t0
+        push!(gen_times, gen_elapsed)
+
         # ── Save checkpoint ──────────────────────────────────────
         # Written atomically so a Ctrl+C here never corrupts the file.
         if checkpoint_path != ""
@@ -1095,10 +1193,18 @@ function cmaes(batch_f, x0::Vector{Float64};
                             ROLLING_BASELINE[], m, σ, C, pc, ps)
         end
 
+        # ── JSON checkpoint (every N generations) ─────────────────
+        if json_checkpoint_path != "" && gen % JSON_CHECKPOINT_INTERVAL == 0
+            save_json_checkpoint(json_checkpoint_path, gen, best_f,
+                                 clamp_weights(best_x), σ, m,
+                                 fitness_history, gen_times)
+            @printf("  [checkpoint] JSON snapshot saved → %s\n", json_checkpoint_path)
+        end
+
         # ── Progress report ──────────────────────────────────────
         gen_best = clamp_weights(samples[order[1]])
-        @printf("  gen %3d/%d  best=%+.4f  σ=%.5f  top=[%.3f %.4f %.3f %.4f %.4f]\n",
-                gen, max_gen, raw_fitness[order[1]], σ,
+        @printf("  gen %3d/%d  best=%+.4f  σ=%.5f  t=%.1fs  top=[%.3f %.4f %.3f %.4f %.4f]\n",
+                gen, max_gen, raw_fitness[order[1]], σ, gen_elapsed,
                 gen_best[1], gen_best[2], gen_best[3], gen_best[4], gen_best[5])
         flush(stdout)   # ensure output appears immediately in redirected logs
 
@@ -1117,6 +1223,31 @@ function cmaes(batch_f, x0::Vector{Float64};
             @printf("  Early stopping at gen %d: σ collapsed to %.2e\n", gen, σ)
             break
         end
+
+        # ── Plateau detection (warning only, does not stop) ──────
+        if length(fitness_history) >= PLATEAU_WINDOW
+            window = @view fitness_history[end-PLATEAU_WINDOW+1:end]
+            improvement = maximum(window) - minimum(window)
+            if improvement < PLATEAU_THRESHOLD
+                if !plateau_warned
+                    @printf("  [PLATEAU WARNING] gen %d: best_f hasn't improved by >%.3f for %d gens (range=%.5f)\n",
+                            gen, PLATEAU_THRESHOLD, PLATEAU_WINDOW, improvement)
+                    @printf("  [PLATEAU WARNING] Consider: increase λ, raise σ, adjust n_pairs, or stop early.\n")
+                    flush(stdout)
+                    plateau_warned = true
+                end
+            else
+                plateau_warned = false  # reset if we escape the plateau
+            end
+        end
+    end
+
+    # ── Final JSON checkpoint ──────────────────────────────────────
+    if json_checkpoint_path != ""
+        save_json_checkpoint(json_checkpoint_path, length(fitness_history),
+                             best_f, clamp_weights(best_x), σ, m,
+                             fitness_history, gen_times)
+        @printf("  [checkpoint] Final JSON snapshot saved → %s\n", json_checkpoint_path)
     end
 
     println()
