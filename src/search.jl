@@ -251,6 +251,7 @@ end
     empty!(from_buf)
     find_ray_blockers!(from_buf, b, fr, ff)
     for sq in from_buf
+        sq == (tr, tf)    && continue   # captured piece already handled
         update_piece_field!(field, b, sq[1], sq[2], -1)
         seen[sq[1], sq[2]] = true
     end
@@ -272,8 +273,8 @@ end
     # Phase 3: add new contributions using updated board
     update_piece_field!(field, b, tr, tf, 1)
     for sq in from_buf
+        sq == (tr, tf)    && continue   # moving piece already handled
         update_piece_field!(field, b, sq[1], sq[2], 1)
-        seen[sq[1], sq[2]] = false
     end
     if captured == 0.0
         for sq in to_buf
@@ -281,6 +282,11 @@ end
             seen[sq[1], sq[2]] && continue
             update_piece_field!(field, b, sq[1], sq[2], 1)
         end
+    end
+
+    # Reset seen flags after both add loops are done
+    for sq in from_buf
+        seen[sq[1], sq[2]] = false
     end
 
     return undo
