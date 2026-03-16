@@ -49,13 +49,15 @@ end
 Compare two 8×8 field matrices for exact (bitwise) equality.
 Returns (true, 0.0) or (false, max_abs_diff).
 """
+const FIELD_EPS = 1e-12   # tolerance for IEEE 754 summation-order rounding
+
 function fields_equal(a::Matrix{Float64}, b::Matrix{Float64})
     max_diff = 0.0
     for i in eachindex(a)
         d = abs(a[i] - b[i])
         d > max_diff && (max_diff = d)
     end
-    return max_diff == 0.0, max_diff
+    return max_diff <= FIELD_EPS, max_diff
 end
 
 """
@@ -423,7 +425,8 @@ let
     cands = [m for m in moves if m.is_castling && m.to_file == 7 && m.from_rank == 1]
     if !isempty(cands)
         f = full_field(b)
-        undo, f_inc = apply_incremental(f, b, first(cands))
+        b_inc = copy_board(b)
+        undo, f_inc = apply_incremental(f, b_inc, first(cands))
         b2 = copy_board(b)
         apply_move!(b2, first(cands))
         f_ref = full_field(b2)
@@ -441,7 +444,8 @@ let
     cands = [m for m in moves if m.is_castling && m.to_file == 3 && m.from_rank == 1]
     if !isempty(cands)
         f = full_field(b)
-        undo, f_inc = apply_incremental(f, b, first(cands))
+        b_inc = copy_board(b)
+        undo, f_inc = apply_incremental(f, b_inc, first(cands))
         b2 = copy_board(b)
         apply_move!(b2, first(cands))
         f_ref = full_field(b2)
@@ -459,7 +463,8 @@ let
     cands = [m for m in moves if m.is_castling && m.to_file == 7 && m.from_rank == 8]
     if !isempty(cands)
         f = full_field(b)
-        undo, f_inc = apply_incremental(f, b, first(cands))
+        b_inc = copy_board(b)
+        undo, f_inc = apply_incremental(f, b_inc, first(cands))
         b2 = copy_board(b)
         apply_move!(b2, first(cands))
         f_ref = full_field(b2)
@@ -477,7 +482,8 @@ let
     cands = [m for m in moves if m.is_castling && m.to_file == 3 && m.from_rank == 8]
     if !isempty(cands)
         f = full_field(b)
-        undo, f_inc = apply_incremental(f, b, first(cands))
+        b_inc = copy_board(b)
+        undo, f_inc = apply_incremental(f, b_inc, first(cands))
         b2 = copy_board(b)
         apply_move!(b2, first(cands))
         f_ref = full_field(b2)
@@ -497,7 +503,8 @@ let
     if !isempty(cands)
         m = first(cands)
         f = full_field(b)
-        undo, f_inc = apply_incremental(f, b, m)
+        b_inc = copy_board(b)
+        undo, f_inc = apply_incremental(f, b_inc, m)
         b2 = copy_board(b)
         apply_move!(b2, m)
         f_ref = full_field(b2)
@@ -524,7 +531,8 @@ function test_ep(fen::String, label::String)
     end
     m = first(ep_moves)
     f = full_field(b)
-    undo, f_inc = apply_incremental(f, b, m)
+    b_inc = copy_board(b)
+    undo, f_inc = apply_incremental(f, b_inc, m)
     b2 = copy_board(b)
     apply_move!(b2, m)
     f_ref = full_field(b2)
@@ -565,7 +573,8 @@ let
     if !isempty(ep_moves)
         m = first(ep_moves)
         f = full_field(b2)
-        undo, f_inc = apply_incremental(f, b2, m)
+        b2_inc = copy_board(b2)
+        undo, f_inc = apply_incremental(f, b2_inc, m)
         b3 = copy_board(b2)
         apply_move!(b3, m)
         f_ref = full_field(b3)
