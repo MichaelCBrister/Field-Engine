@@ -229,14 +229,28 @@ end
 @inline function apply_with_field!(field::Matrix{Float64}, b::Board, m::Move,
                                     from_buf::Vector{Tuple{Int,Int}},
                                     to_buf::Vector{Tuple{Int,Int}},
-                                    seen::Matrix{Bool})::State.UndoInfo
+                                    seen::Matrix{Bool},
+                                    debug::Bool = false)::State.UndoInfo
     fr, ff = m.from_rank, m.from_file
     tr, tf = m.to_rank, m.to_file
+
+    if debug
+        println("apply_with_field! DEBUG")
+        println("  move: $(move_to_string(m))  from=($(fr),$(ff)) to=($(tr),$(tf))")
+        println("  is_castling=$(m.is_castling)  is_en_passant=$(m.is_en_passant)")
+        println("  piece at from: $(b.grid[fr, ff])  piece at to: $(b.grid[tr, tf])")
+        println("  en_passant square: $(b.en_passant)")
+        println("  field_sum before: $(sum(field))")
+    end
 
     # Special moves: full recompute is simpler and they're rare
     if m.is_castling || m.is_en_passant
         undo = apply_move!(b, m)
         compute_total_field!(field, b)
+        if debug
+            println("  [special move path: full recompute]")
+            println("  field_sum after full recompute: $(sum(field))")
+        end
         return undo
     end
 
@@ -266,6 +280,17 @@ end
         end
     end
 
+    if debug
+        println("Phase 1 (subtract):")
+        println("  from_buf: $(from_buf)")
+        println("  to_buf: $(to_buf)")
+        overlap = [sq for sq in from_buf if sq in to_buf]
+        println("  overlap (in both): $(overlap)")
+        println("  captured at to_sq: $(captured)")
+        field_sum = sum(field)
+        println("  field after subtract: $(field_sum)")
+    end
+
     # Phase 2: apply the move
     undo = apply_move!(b, m)
 
@@ -275,6 +300,12 @@ end
         update_piece_field!(field, b, sq[1], sq[2], 1)
         # Keep seen=true so to_buf loop below skips pieces already added here
     end
+
+    if debug
+        println("Phase 3a (add from_buf):")
+        println("  field after adding from_buf: $(sum(field))")
+    end
+
     if captured == 0.0
         for sq in to_buf
             sq == (fr, ff)    && continue
@@ -282,6 +313,13 @@ end
             update_piece_field!(field, b, sq[1], sq[2], 1)
         end
     end
+
+    if debug
+        println("Phase 3b (add to_buf):")
+        println("  field after adding to_buf: $(sum(field))")
+        println("Final incremental field: $(sum(field))")
+    end
+
     # Reset seen flags now that both add loops are done
     for sq in from_buf
         seen[sq[1], sq[2]] = false
