@@ -1,0 +1,15 @@
+name: Tests
+
+   on: [push, pull_request]
+
+   jobs:
+     test:
+       runs-on: ubuntu-latest
+       steps:
+         - uses: actions/checkout@v3
+         - uses: julia-actions/setup-julia@v1
+           with:
+             version: '1.9'
+         - uses: julia-actions/julia-buildpkg@v1
+         - run: julia test/runtests.jl
+         - run: julia test/verify_repetition.jl
