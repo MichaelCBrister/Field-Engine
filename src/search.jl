@@ -233,43 +233,25 @@ end
     fr, ff = m.from_rank, m.from_file
     tr, tf = m.to_rank, m.to_file
 
-    # Castling: full recompute is simpler and castling is rare
-    if m.is_castling
+    # Special moves: full recompute is simpler and they're rare
+    # (~50 castling + ~50 en passant per game, negligible overhead)
+    if m.is_castling || m.is_en_passant
         undo = apply_move!(b, m)
         compute_total_field!(field, b)
         return undo
     end
 
-    # Normal and en passant moves: incremental update
-    # For en passant, the destination (tr, tf) is empty, so captured == 0.0.
-    # The actually-captured pawn sits at (fr, tf) — same rank as the moving
-    # pawn, same file as the destination.
+    # Normal move: incremental update
     captured = b.grid[tr, tf]
 
     # Phase 1: subtract old contributions
-    update_piece_field!(field, b, fr, ff, -1)          # moving piece leaves
-    captured == 0.0 || update_piece_field!(field, b, tr, tf, -1)  # normal capture
-
-    # En passant: subtract the captured pawn at (fr, tf) and any sliders
-    # whose rays it was blocking.  We use to_buf as a temporary buffer here,
-    # then merge the results into from_buf so Phase 3 adds them back.
-    empty!(from_buf)
-    if m.is_en_passant
-        update_piece_field!(field, b, fr, tf, -1)      # captured ep pawn
-        empty!(to_buf)
-        find_ray_blockers!(to_buf, b, fr, tf)
-        for sq in to_buf
-            seen[sq[1], sq[2]] && continue             # already handled
-            update_piece_field!(field, b, sq[1], sq[2], -1)
-            push!(from_buf, sq)                        # extend from_buf → Phase 3 adds them back
-            seen[sq[1], sq[2]] = true
-        end
-    end
+    update_piece_field!(field, b, fr, ff, -1)
+    captured == 0.0 || update_piece_field!(field, b, tr, tf, -1)
 
     # Sliders through from_sq will change (ray may extend past it)
+    empty!(from_buf)
     find_ray_blockers!(from_buf, b, fr, ff)
     for sq in from_buf
-        seen[sq[1], sq[2]] && continue                 # already handled (ep merge above)
         update_piece_field!(field, b, sq[1], sq[2], -1)
         seen[sq[1], sq[2]] = true
     end
@@ -285,27 +267,13 @@ end
         end
     end
 
-    # Phase 2: apply the move (also removes the ep captured pawn for ep moves)
+    # Phase 2: apply the move
     undo = apply_move!(b, m)
 
     # Phase 3: add new contributions using updated board
     update_piece_field!(field, b, tr, tf, 1)
-    # from_buf may contain duplicates when a slider is blocked by both the ep
-    # captured pawn square AND the moving pawn's source square.  Phase 1 already
-    # guarded against double-subtraction using seen; here we need the symmetric
-    # guard for addition.
-    #
-    # seen is currently true for all from_buf entries (set in Phase 1).
-    # Reset it first so we can re-use seen as an "already added" tracker:
-    # first occurrence → seen=false → add, set seen=true
-    # duplicate        → seen=true  → skip
     for sq in from_buf
-        seen[sq[1], sq[2]] = false
-    end
-    for sq in from_buf
-        seen[sq[1], sq[2]] && continue    # duplicate — already added
         update_piece_field!(field, b, sq[1], sq[2], 1)
-        seen[sq[1], sq[2]] = true         # mark so to_buf loop skips this sq
     end
     if captured == 0.0
         for sq in to_buf
