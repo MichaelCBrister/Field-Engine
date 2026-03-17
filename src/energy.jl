@@ -18,18 +18,23 @@ export evaluate, evaluate_verbose, field_energy
 # ── Evaluation weights ─────────────────────────────────────────
 # W_MATERIAL dominates by design — a pawn is a pawn.
 # The other weights are fractions of a pawn, tunable through play.
-const W_MATERIAL    = 2.9860     # Raw material balance (charge sum)
-const W_FIELD       = -0.0962    # Net board influence (territorial control)
+#
+# W_MATERIAL and W_FIELD are sourced from the completed 3-term CMA-ES run
+# (200-gen vs Stockfish skill-5, best fitness -0.5563, early-stopped gen 21).
+# W_KING_SAFETY and W_MOBILITY are hand-tuned baselines pending the 5-term run.
+# W_TENSION converged to ~0 in both 3-term and early 5-term runs; kept at 0.
+const W_MATERIAL    = 3.1238     # Raw material balance (charge sum)
+const W_FIELD       = -0.092832  # Net board influence (territorial control)
 const W_KING_SAFETY = 0.4380     # Enemy field penetrating the king's shelter
-const W_TENSION     = -0.0000    # Tactical tension concentrated near the king
+const W_TENSION     = 0.0000     # Tactical tension concentrated near the king
 const W_MOBILITY    = 1.2847     # Piece activity (total reachable squares)
 
 # ── 3-term model weight ──────────────────────────────────────
 # Field energy — sum of squared field values over all squares.
 # In the 3-term model, E = w1*material + w2*sum(Phi) + w3*sum(Phi^2),
 # this is the starting weight for the sum(Phi^2) term.
-# The optimizer will tune it via CMA-ES.
-const W_FIELD_ENERGY = 0.1
+# Sourced from the same completed 3-term CMA-ES run as W_MATERIAL/W_FIELD above.
+const W_FIELD_ENERGY = 0.095950
 
 # Score returned for checkmate — large enough to dominate all positional terms.
 const CHECKMATE_SCORE = 10000.0

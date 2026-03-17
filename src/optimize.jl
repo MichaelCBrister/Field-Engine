@@ -143,7 +143,11 @@ const WEIGHT_MAX = Float64[20.0,  1.5,  2.5,  0.02,  2.5]
 
 # Cap CMA-ES step-size growth. σ explosion was causing near-random sampling
 # and huge coefficient magnitudes that don't transfer to real play strength.
-const CMAES_SIGMA_MAX = 0.5
+# 3term uses 0.5; 5term needs 1.5 because the 5D landscape is wider and
+# mobility/king-safety dimensions have a larger natural step scale.
+# WEIGHT_MIN/WEIGHT_MAX clamps are the hard safety net — σ_max just prevents
+# the step-size feedback loop from permanently saturating.
+const CMAES_SIGMA_MAX = 1.5
 
 function clamp_weights(w::Vector{Float64})::Vector{Float64}
     out = copy(w)
@@ -1119,9 +1123,9 @@ function cmaes(batch_f, x0::Vector{Float64};
 
         # ── Progress report ──────────────────────────────────────
         gen_best = clamp_weights(samples[order[1]])
-        @printf("  gen %3d/%d  best=%+.4f  σ=%.5f  top=[%.3f %.4f %.3f %.4f %.4f]\n",
-                gen, max_gen, raw_fitness[order[1]], σ,
-                gen_best[1], gen_best[2], gen_best[3], gen_best[4], gen_best[5])
+        weights_str = join([@sprintf("%.4f", w) for w in gen_best], " ")
+        @printf("  gen %3d/%d  best=%+.4f  σ=%.5f  top=[%s]\n",
+                gen, max_gen, raw_fitness[order[1]], σ, weights_str)
         flush(stdout)   # ensure output appears immediately in redirected logs
 
         # ── Early stopping ──────────────────────────────────────
@@ -1363,7 +1367,7 @@ function parse_cli_args(args::Vector{String})
     λ = 8
     n_gen = 30
     n_pairs = 2
-    eval_model = :5term
+    eval_model = Symbol("5term")
     mode = :stockfish
     stockfish_path = DEFAULT_STOCKFISH_PATH
     sf_movetime_ms = 120
