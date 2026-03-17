@@ -427,11 +427,15 @@ function qsearch(b::Board, w::Vector{Float64},
     stand_pat = -INF
     if !in_check
         stand_pat = Float64(b.turn) * eval_w(b, w, field)
-        stand_pat >= β && return β
+        if stand_pat >= β
+            tt_store!(tt, b.hash, 0, ply, stand_pat, TT_LOWER)
+            return stand_pat
+        end
         α = max(α, stand_pat)
     end
 
     orig_α = α
+    best_score = in_check ? -INF : stand_pat
     for m in legal_buf
         if !in_check
             # Only captures and en passant in normal qsearch.
@@ -449,13 +453,17 @@ function qsearch(b::Board, w::Vector{Float64},
         undo_move!(b, m, undo)
         copyto!(field, fstack[ply])
 
-        score >= β && return β
+        best_score = max(best_score, score)
         α = max(α, score)
+        if score >= β
+            tt_store!(tt, b.hash, 0, ply, score, TT_LOWER)
+            return score
+        end
     end
 
-    flag = α <= orig_α ? TT_UPPER : (α >= β ? TT_LOWER : TT_EXACT)
-    tt_store!(tt, b.hash, 0, ply, α, flag)
-    return α
+    flag = best_score <= orig_α ? TT_UPPER : TT_EXACT
+    tt_store!(tt, b.hash, 0, ply, best_score, flag)
+    return best_score
 end
 
 # ── Negamax with alpha-beta ──────────────────────────────────
@@ -470,6 +478,12 @@ end
 #   8. Repetition detection — 2-fold draw
 #
 # `is_null` prevents two consecutive null moves (unsound).
+#
+# Fail-soft semantics: returned scores can fall outside the [α, β] window.
+# On a beta cutoff the actual score (not β) is returned and stored in the TT,
+# giving tighter bounds for future probes. On an all-node the best score
+# found (which may be < α) is returned and stored as TT_UPPER. The TT
+# therefore holds the true minimax estimate rather than the clamped bound.
 function negamax(b::Board, w::Vector{Float64},
                  depth::Int, α::Float64, β::Float64,
                  field::Matrix{Float64},
@@ -592,14 +606,13 @@ function negamax(b::Board, w::Vector{Float64},
 
         best_score = max(best_score, score)
         if score >= β
-            tt_store!(tt, b.hash, depth, ply, β, TT_LOWER)
-            return β
+            tt_store!(tt, b.hash, depth, ply, score, TT_LOWER)
+            return score
         end
         α = max(α, score)
     end
 
-    flag = best_score <= orig_α ? TT_UPPER :
-           best_score >= β      ? TT_LOWER : TT_EXACT
+    flag = best_score <= orig_α ? TT_UPPER : TT_EXACT
     tt_store!(tt, b.hash, depth, ply, best_score, flag)
     return best_score
 end
