@@ -235,10 +235,31 @@ const DEFAULT_WEIGHTS = Float64[
 #   b.white_king → was find_king scan, O(64) → O(1)
 #   b.black_king → same
 #   field        → maintained incrementally, not recomputed
-function eval_w(b::Board, w::Vector{Float64}, field::Matrix{Float64})::Float64
+# Supports two evaluation models, dispatched by the length of `w`:
+#
+#   length(w) == 3  →  3-term model:  material + field_ctrl + field_energy
+#       Cheaper and more physically grounded. The field_energy term
+#       (sum of Phi^2) naturally encodes king safety, tension, and
+#       mobility without hand-coded spatial filters.
+#
+#   length(w) == 5  →  5-term model:  material + field_ctrl + king + tension + mobility
+#       Original model with explicit heuristic components.
+#
+# The length check is a compile-time-predictable branch: within any
+# optimization run, w always has the same length, so the CPU branch
+# predictor will learn the pattern after a handful of calls.
+@inline function eval_w(b::Board, w::Vector{Float64}, field::Matrix{Float64})::Float64
     material   = b.material
     field_ctrl = sum(field)
 
+    # 3-term model: w = [W_MATERIAL, W_FIELD, W_FIELD_ENERGY]
+    # Cheaper and more physically grounded than the 5-term model.
+    if length(w) == 3
+        fe = Energy.field_energy(field)
+        return w[1] * material + w[2] * field_ctrl + w[3] * fe
+    end
+
+    # 5-term model (backward-compatible, existing behavior)
     wkr, wkf = b.white_king
     bkr, bkf = b.black_king
 

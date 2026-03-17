@@ -13,7 +13,7 @@ using Base.Threads
 using ..State
 using ..Fields
 
-export evaluate, evaluate_verbose
+export evaluate, evaluate_verbose, field_energy
 
 # ── Evaluation weights ─────────────────────────────────────────
 # W_MATERIAL dominates by design — a pawn is a pawn.
@@ -23,6 +23,13 @@ const W_FIELD       = -0.0962    # Net board influence (territorial control)
 const W_KING_SAFETY = 0.4380     # Enemy field penetrating the king's shelter
 const W_TENSION     = -0.0000    # Tactical tension concentrated near the king
 const W_MOBILITY    = 1.2847     # Piece activity (total reachable squares)
+
+# ── 3-term model weight ──────────────────────────────────────
+# Field energy — sum of squared field values over all squares.
+# In the 3-term model, E = w1*material + w2*sum(Phi) + w3*sum(Phi^2),
+# this is the starting weight for the sum(Phi^2) term.
+# The optimizer will tune it via CMA-ES.
+const W_FIELD_ENERGY = 0.1
 
 # Score returned for checkmate — large enough to dominate all positional terms.
 const CHECKMATE_SCORE = 10000.0
@@ -51,6 +58,30 @@ function _get_eval_buf()::Matrix{Float64}
         end
     end
     return @inbounds _EVAL_FIELD_BUFS[tid]
+end
+
+# ── Field energy (3-term model) ──────────────────────────────
+# Compute sum(Phi^2) over the 8×8 field matrix.
+#
+# This is the "field energy" observable from lattice field theory.
+# Unlike sum(Phi) which can cancel out (positive and negative fields
+# offset each other), sum(Phi^2) is always non-negative and grows
+# when fields concentrate — exactly where pieces are active, kings
+# are under pressure, or tactical tension exists.
+#
+# Why this single term can replace king_safety + tension + mobility:
+#   • King safety: concentrated enemy field near a king → high Phi^2 there
+#   • Tension: opposing fields meeting sharply → both cells have large |Phi|
+#   • Mobility: active pieces radiate field to many squares → more nonzero cells
+#
+# One O(64) pass, no spatial filters, no ray-walking — pure math on the
+# field matrix that the engine already maintains incrementally.
+@inline function field_energy(field::Matrix{Float64})::Float64
+    s = 0.0
+    @inbounds for v in field
+        s += v * v
+    end
+    return s
 end
 
 # Sum the enemy-colored field magnitude in the 3×3 zone around the king at (kr, kf),
