@@ -60,26 +60,31 @@ function _get_eval_buf()::Matrix{Float64}
     return @inbounds _EVAL_FIELD_BUFS[tid]
 end
 
-# ── Field energy (3-term model) ──────────────────────────────
-# Compute sum(Phi^2) over the 8×8 field matrix.
+# ── Field energy: signed quadratic field observable ──────────────
 #
-# This is the "field energy" observable from lattice field theory.
-# Unlike sum(Phi) which can cancel out (positive and negative fields
-# offset each other), sum(Phi^2) is always non-negative and grows
-# when fields concentrate — exactly where pieces are active, kings
-# are under pressure, or tactical tension exists.
+# Computes sum(v * |v|) over all 64 squares, which equals sum(sign(v) * v²).
 #
-# Why this single term can replace king_safety + tension + mobility:
-#   • King safety: concentrated enemy field near a king → high Phi^2 there
-#   • Tension: opposing fields meeting sharply → both cells have large |Phi|
-#   • Mobility: active pieces radiate field to many squares → more nonzero cells
+# WHY NOT sum(v²)?
+#   Plain sum(v²) is always positive — both kings contribute 100² = 10,000
+#   regardless of color. The symmetric starting position would evaluate to
+#   ~64,000 instead of 0. CMA-ES cannot optimize a term that doesn't
+#   distinguish White from Black.
 #
-# One O(64) pass, no spatial filters, no ray-walking — pure math on the
-# field matrix that the engine already maintains incrementally.
+# WHY sum(v * |v|)?
+#   - Positive where White's field is stronger (net positive influence)
+#   - Negative where Black's field is stronger (net negative influence)
+#   - ~0 for symmetric positions (starting position, equal material)
+#   - Amplifies strong fields quadratically (a field of 2 contributes 4,
+#     not 2) so concentrated attacks/king threats register more than
+#     diffuse influence
+#   - One O(64) pass, no branches, no spatial filters — pure math
+#
+# In physics terms: this is the signed energy density of the field,
+# integrated over the board lattice.
 @inline function field_energy(field::Matrix{Float64})::Float64
     s = 0.0
     @inbounds for v in field
-        s += v * v
+        s += v * abs(v)
     end
     return s
 end
