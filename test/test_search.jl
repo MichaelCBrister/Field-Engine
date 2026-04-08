@@ -119,6 +119,36 @@ field5 = compute_total_field(b5)
 q5 = Search.qsearch(b5, w4, -Search.INF, Search.INF, field5, 1, new_tt())
 test("Checked side with no legal moves gets mate score", q5 <= -9000.0)
 
+# ── SearchContext deadline overflow ────────────────────────────
+# A very large (but finite) deadline must not throw an InexactError when
+# converting to UInt64.  Before the fix, `min(deadline_seconds, 1e12)*1e9`
+# could produce 1e21 > typemax(UInt64), causing an exception.
+println("\n═══ SearchContext deadline safety ═══\n")
+
+# ── SearchContext deadline overflow ────────────────────────────
+# A very large (but finite) deadline must not throw an InexactError when
+# converting to UInt64.  Before the fix, `min(deadline_seconds, 1e12)*1e9`
+# could produce 1e21 > typemax(UInt64), causing an exception.
+println("\n═══ SearchContext deadline safety ═══\n")
+
+ctx_large = Search.SearchContext(1e10)    # 317 years — previously overflowed
+test("SearchContext(1e10) does not overflow",
+     ctx_large.deadline_ns >= time_ns() &&          # is in the future
+     ctx_large.deadline_ns < typemax(UInt64))        # didn't saturate to typemax
+
+# Capture time_ns() once so both bounds use the same reference point.
+t_before_small = time_ns()
+ctx_small = Search.SearchContext(0.001)   # 1 ms — normal interactive use
+# The deadline should be approximately 1 ms ahead of t_before_small.
+# Allow up to 2 s of slop to tolerate slow test environments.
+test("SearchContext(0.001) sets near-future deadline",
+     ctx_small.deadline_ns > t_before_small &&
+     ctx_small.deadline_ns < t_before_small + UInt64(2e9))
+
+ctx_inf = Search.SearchContext(Inf)
+test("SearchContext(Inf) sets typemax deadline",
+     ctx_inf.deadline_ns == typemax(UInt64))
+
 # ── Summary ────────────────────────────────────────────────────
 println("\n═══════════════════════════════════════════")
 println("  Results: $passed passed, $failed failed")

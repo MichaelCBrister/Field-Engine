@@ -926,7 +926,10 @@ function is_stalemate(b::Board)
 end
 
 function is_game_over(b::Board)
-    isempty(generate_moves(b)) || b.halfmove ≥ 100 || is_threefold_repetition(b)
+    # Check the two cheap conditions first before the expensive generate_moves call.
+    b.halfmove ≥ 100 && return true
+    is_threefold_repetition(b) && return true
+    return isempty(generate_moves(b))
 end
 
 function game_result(b::Board)
