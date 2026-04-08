@@ -161,6 +161,18 @@ moves6 = generate_moves(b6)
 ep_moves = filter(m -> m.is_en_passant, moves6)
 test("White has en passant capture available", length(ep_moves) == 1)
 
+# ── Test 9: is_game_over terminates correctly ─────────────────
+println("\nis_game_over:")
+
+# 50-move rule: position with halfmove = 100 must be game over
+b7 = new_board()
+b7.halfmove = 100
+test("is_game_over true at halfmove=100", is_game_over(b7))
+
+# Normal starting position is not game over
+b8 = new_board()
+test("is_game_over false at start", !is_game_over(b8))
+
 # ── Summary ────────────────────────────────────────────────────
 println("\n═══════════════════════════════════")
 println("  Results: $passed passed, $failed failed")

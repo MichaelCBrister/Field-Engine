@@ -210,8 +210,10 @@ function evaluate_verbose(b::Board)
     material  = b.material
     field_ctrl = sum(field)
 
-    wkr, wkf = State.find_king(b, WHITE)
-    bkr, bkf = State.find_king(b, BLACK)
+    # sync_board! above already refreshes white_king / black_king — use them
+    # directly (O(1)) rather than calling find_king (O(64) scan).
+    wkr, wkf = b.white_king
+    bkr, bkf = b.black_king
 
     king_score    = king_zone_pressure(field, bkr, bkf, BLACK) -
                     king_zone_pressure(field, wkr, wkf, WHITE)

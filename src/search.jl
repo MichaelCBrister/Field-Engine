@@ -68,8 +68,16 @@ Create a search context with the given wall-clock deadline.
 """
 function SearchContext(deadline_seconds::Float64)
     now = time_ns()
-    deadline = deadline_seconds == Inf ? typemax(UInt64) :
-               now + UInt64(min(deadline_seconds, 1e12) * 1e9)
+    # Guard against UInt64 overflow: typemax(UInt64) ≈ 1.844e19 ns.
+    # The old cap of 1e12 s × 1e9 ns/s = 1e21 ns exceeds typemax(UInt64)
+    # and would throw InexactError on conversion.  We cap the added
+    # nanoseconds to what actually fits between `now` and typemax(UInt64).
+    deadline = if deadline_seconds == Inf
+        typemax(UInt64)
+    else
+        max_ns = Float64(typemax(UInt64) - now)  # headroom before wraparound
+        now + UInt64(min(deadline_seconds * 1e9, max_ns))
+    end
     return SearchContext(now, deadline, 0, Threads.Atomic{Bool}(false))
 end
 
@@ -542,7 +550,7 @@ function negamax(b::Board, w::Vector{Float64},
         b.en_passant = old_ep
         old_ep != (0,0) && (b.hash ⊻= ZOBRIST_EP[old_ep[2]])
 
-        null_score >= β && return β
+        null_score >= β && return null_score  # fail-soft: return actual score, not β
     end
 
     # ── MVV-LVA move ordering ────────────────────────────────────
